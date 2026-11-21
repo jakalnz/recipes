@@ -45,24 +45,26 @@ const MEAT = ['beef', 'mince', 'steak', 'lamb', 'mutton', 'pork', 'bacon', 'ham'
 export const PRESETS = [
   { id: 'coeliac', label: 'Coeliac / gluten free', kind: 'condition', items: [GLUTEN],
     note: 'Also watch for cross-contamination: shared toasters, boards, fryers and flour in the air.' },
-  { id: 'diabetic', label: 'Diabetic', kind: 'condition', items: [SUGARY],
-    note: 'Carbs per serving show on every recipe once they are worked out.' },
+  { id: 'diabetic', label: 'Diabetic', kind: 'condition', items: [{ ...SUGARY, optional: true }],
+    note: 'Carbs per serving will show on every recipe. Flagging every recipe with sugar in it is optional, since a teaspoon in a curry is rarely the issue.' },
   { id: 'whipple', label: 'After Whipple / Creon', kind: 'condition',
-    note: 'Commonly reported after a Whipple. Everyone is different, so switch off what doesn’t apply and follow your care team. Smaller, more frequent meals often sit better. The app shows fat per serving to help with your own Creon plan. It does not suggest doses.',
+    note: 'Commonly reported after a Whipple. Only high fat is flagged to start with: tick the others that bother this person. Everyone is different, so follow your care team. Smaller, more frequent meals often sit better. The app shows fat per serving to help with your own Creon plan. It does not suggest doses.',
     items: [
-      { id: 'gassy', label: 'Gassy vegetables', level: 'upset',
+      { id: 'gassy', label: 'Gassy vegetables', level: 'upset', optional: true,
         words: ['cabbage', 'red cabbage', 'savoy', 'coleslaw', 'slaw', 'sauerkraut', 'kimchi', 'bok choy', 'pak choi', 'brussels sprout', 'brussels sprouts', 'broccoli', 'broccolini', 'cauliflower', 'kale', 'onion', 'onions', 'spring onion', 'shallot', 'leek', 'leeks', 'garlic', 'radish', 'turnip', 'swede', 'asparagus', 'artichoke'] },
-      { id: 'legumes', label: 'Beans and lentils', level: 'upset',
+      { id: 'legumes', label: 'Beans and lentils', level: 'upset', optional: true,
         words: ['bean', 'beans', 'baked beans', 'kidney beans', 'black beans', 'chickpea', 'chickpeas', 'lentil', 'lentils', 'split peas', 'hummus', 'houmous'], not: ['green beans', 'vanilla bean', 'coffee bean'] },
       { id: 'fatty', label: 'High fat and fried', level: 'watch',
-        words: ['deep fry', 'deep-fry', 'deep fried', 'fried', 'cream', 'double cream', 'sour cream', 'mascarpone', 'cream cheese', 'butter', 'lard', 'dripping', 'pastry', 'puff pastry', 'bacon', 'chorizo', 'salami', 'coconut cream', 'mayonnaise', 'oil for frying'] },
-      { ...SUGARY, id: 'sugary', label: 'Very sugary (dumping)', level: 'watch' },
-      { id: 'lactose', label: 'Lactose', level: 'upset',
+        // clearly rich ingredients only; a knob of butter is everywhere. Fat per serving (coming) is the real measure.
+        words: ['deep fry', 'deep-fry', 'deep fried', 'deep frying', 'oil for frying', 'oil for deep frying', 'cream', 'double cream', 'thickened cream', 'heavy cream', 'sour cream', 'mascarpone', 'cream cheese', 'lard', 'dripping', 'pastry', 'puff pastry', 'pork belly', 'bacon', 'chorizo', 'salami', 'coconut cream', 'mayonnaise'],
+        not: ['ice cream', 'cream of tartar'] },
+      { ...SUGARY, id: 'sugary', label: 'Very sugary (dumping)', level: 'watch', optional: true },
+      { id: 'lactose', label: 'Lactose', level: 'upset', optional: true,
         words: ['milk', 'cream', 'ice cream', 'yoghurt', 'yogurt', 'soft cheese', 'ricotta', 'cottage cheese', 'cream cheese', 'condensed milk', 'evaporated milk', 'custard', 'buttermilk'],
         not: ['lactose free', 'lactose-free', 'coconut milk', 'coconut cream', 'almond milk', 'oat milk', 'soy milk', 'rice milk'] },
-      { id: 'spicy', label: 'Spicy', level: 'upset', words: ['chilli', 'chili', 'chillies', 'cayenne', 'jalapeno', 'jalapeño', 'sriracha', 'tabasco', 'hot sauce', 'curry paste', 'harissa', 'gochujang', 'chilli flakes'] },
-      { id: 'fizzy', label: 'Fizzy drinks', level: 'upset', words: ['soda water', 'lemonade', 'cola', 'ginger beer', 'tonic', 'sparkling', 'fizzy'] },
-      { id: 'alcohol', label: 'Alcohol', level: 'upset', words: ['wine', 'beer', 'brandy', 'rum', 'vodka', 'whisky', 'whiskey', 'sherry', 'port', 'liqueur', 'cider', 'gin'], not: ['wine vinegar', 'cider vinegar', 'ginger', 'port salut'] },
+      { id: 'spicy', label: 'Spicy', level: 'upset', optional: true, words: ['chilli', 'chili', 'chillies', 'cayenne', 'jalapeno', 'jalapeño', 'sriracha', 'tabasco', 'hot sauce', 'curry paste', 'harissa', 'gochujang', 'chilli flakes'] },
+      { id: 'fizzy', label: 'Fizzy drinks', level: 'upset', optional: true, words: ['soda water', 'lemonade', 'cola', 'ginger beer', 'tonic', 'sparkling', 'fizzy'] },
+      { id: 'alcohol', label: 'Alcohol', level: 'upset', optional: true, words: ['wine', 'beer', 'brandy', 'rum', 'vodka', 'whisky', 'whiskey', 'sherry', 'port', 'liqueur', 'cider', 'gin'], not: ['wine vinegar', 'cider vinegar', 'ginger', 'port salut'] },
     ] },
   { id: 'lactose', label: 'Lactose intolerant', kind: 'condition', items: [
       { id: 'lactose', label: 'Lactose', level: 'upset',
@@ -92,13 +94,20 @@ function hit(line, words){
   return null;
 }
 
+// Optional items start switched off and are turned on per person (presetOn);
+// the others start on and can be switched off (presetOff).
+export function itemActive(person, pid, it){
+  const k = `${pid}:${it.id}`;
+  return it.optional ? (person.presetOn || []).includes(k) : !(person.presetOff || []).includes(k);
+}
+
 // Expand a person's profile into checks: [{ key, label, level, words, not, hints, source }]
 export function rulesFor(person){
-  const out = [], off = new Set(person.presetOff || []);
+  const out = [];
   for (const pid of person.presets || []){
     const p = presetById(pid); if (!p) continue;
     for (const it of p.items){
-      if (off.has(`${pid}:${it.id}`)) continue;
+      if (!itemActive(person, pid, it)) continue;
       out.push({ key: `${pid}:${it.id}`, label: it.label, level: it.level, words: it.words, not: it.not || [], hints: it.hints || {}, source: p.label });
     }
   }

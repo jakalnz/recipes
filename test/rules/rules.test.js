@@ -1,4 +1,4 @@
-﻿// Firestore rules tests. Run with: npm run test:rules  (needs Java for the emulator)
+// Firestore rules tests. Run with: npm run test:rules  (needs Java for the emulator)
 import { test, before, after, beforeEach } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment, assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
@@ -21,7 +21,7 @@ const as = k => {
 
 before(async () => {
   env = await initializeTestEnvironment({
-    projectId: 'demo-recipes',
+    projectId: 'demo-rules-test',   // separate from the dev data used by npm run emu
     firestore: { rules: readFileSync('firestore.rules', 'utf8'), host: '127.0.0.1', port: 8181 },
   });
 });
@@ -84,6 +84,15 @@ test('family members read, add and edit recipes', async () => {
   await assertFails(setDoc(doc(as('aunt'), 'rxRecipes/r3'), { title: 'Fake', createdBy: { uid: 'shopA', name: 'X' } }));
   await assertSucceeds(updateDoc(doc(as('shopA'), 'rxRecipes/r1'), { notes: 'Less salt' }));
   await assertFails(updateDoc(doc(as('shopA'), 'rxRecipes/r1'), { createdBy: { uid: 'shopA', name: 'X' } }));
+});
+test('family can store recipe photos, strangers and Shop-only paths cannot', async () => {
+  await assertSucceeds(setDoc(doc(as('aunt'), 'rxPhotos/r1'), { data: 'data:image/jpeg;base64,AAAA' }));
+  await assertSucceeds(getDoc(doc(as('shopA'), 'rxPhotos/r1')));
+  await assertFails(setDoc(doc(as('aunt'), 'rxPhotos/r2'), { data: 42 }));
+  await assertFails(getDoc(doc(as('stranger'), 'rxPhotos/r1')));
+});
+test('anyone in the family can rate a recipe without changing who added it', async () => {
+  await assertSucceeds(updateDoc(doc(as('shopA'), 'rxRecipes/r1'), { 'stars.shopA': 4 }));
 });
 test('ratings are per person', async () => {
   await assertSucceeds(setDoc(doc(as('aunt'), 'rxRecipes/r1/ratings/aunt'), { stars: 5 }));

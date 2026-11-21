@@ -94,6 +94,19 @@ label.cb small{display:block;color:var(--mute);font-weight:400}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}
 @media (max-width:420px){.grid2{grid-template-columns:1fr}}
 
+.stars{color:var(--tag);letter-spacing:1px}
+.rate{display:flex;align-items:center;gap:2px;margin-top:10px;flex-wrap:wrap}
+.rate button{font-size:26px;line-height:1;color:var(--line);padding:2px}
+.rate button.on{color:var(--tag)}
+.rate .note{margin-left:8px}
+.hero{display:block;width:calc(100% + 32px);margin:-18px -16px 14px;max-height:42vh;object-fit:cover;border-radius:14px 14px 0 0;background:var(--row)}
+.ings{padding-left:20px}.ings li{margin:3px 0}
+.ings li.ih{list-style:none;margin:12px 0 2px -20px;font-weight:600;font-family:var(--disp)}
+.nut{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:8px}
+.nut div{background:var(--row);border:1px solid var(--line);border-radius:6px;padding:8px}
+.nut b{display:block;font-family:var(--disp);font-size:18px}.nut span{font-size:13px;color:var(--mute)}
+label.imp{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
+
 #toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:6px;z-index:40;font-weight:500;max-width:90vw;display:none}
 #toast.on{display:block}
 
@@ -143,6 +156,7 @@ label.cb small{display:block;color:var(--mute);font-weight:400}
       </div>
       <div class="toolrow">
         <button class="btn sm tag" data-a="addRecipe">+ Add recipe</button>
+        <button class="btn sm" data-a="importer">Import</button>
       </div>
       <div class="count" id="rcount"></div>
       <div id="recipesBody"></div>

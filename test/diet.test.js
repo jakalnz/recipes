@@ -10,19 +10,27 @@ test("Dad's own cabbage entry catches coleslaw", () => {
   const f = checkRecipe(['2 cups coleslaw mix'], [dad]);
   assert.ok(f.some(x => x.label === 'cabbage' && x.level === 'upset'));
 });
-test('After Whipple flags gassy veg, beans and cream', () => {
-  const f = checkRecipe(['1 onion, diced', '1 can (400 g) kidney beans', '½ cup cream'], [{ ...dad, custom: [] }]);
-  const labels = f.map(x => x.label);
+test('After Whipple starts with only high fat flagged', () => {
+  const f = checkRecipe(['1 onion, diced', '1 can (400 g) kidney beans', '1 tsp sugar', '½ cup cream'], [{ ...dad, custom: [] }]);
+  assert.deepEqual(f.map(x => x.label), ['High fat and fried']);
+});
+test('optional Whipple flags can be ticked on per person', () => {
+  const p = { ...dad, custom: [], presetOn: ['whipple:gassy', 'whipple:legumes'] };
+  const labels = checkRecipe(['1 onion, diced', '1 can (400 g) kidney beans'], [p]).map(x => x.label);
   assert.ok(labels.includes('Gassy vegetables'));
   assert.ok(labels.includes('Beans and lentils'));
-  assert.ok(labels.includes('High fat and fried'));
 });
-test('presets can be switched off per person', () => {
-  const f = checkRecipe(['1 onion'], [{ ...dad, custom: [], presetOff: ['whipple:gassy'] }]);
-  assert.equal(f.length, 0);
+test('default flags can be switched off per person', () => {
+  assert.equal(checkRecipe(['½ cup cream'], [{ ...dad, custom: [], presetOff: ['whipple:fatty'] }]).length, 0);
+});
+test('diabetic sugar flag is opt-in', () => {
+  const d = { id: 'd', name: 'D', presets: ['diabetic'] };
+  assert.equal(checkRecipe(['1 tsp sugar'], [d]).length, 0);
+  assert.equal(checkRecipe(['1 tsp sugar'], [{ ...d, presetOn: ['diabetic:sugar'] }]).length, 1);
 });
 test('green beans are not flagged as legumes', () => {
-  assert.equal(checkRecipe(['200 g green beans'], [{ ...dad, custom: [] }]).filter(x => x.label === 'Beans and lentils').length, 0);
+  const p = { ...dad, custom: [], presetOn: ['whipple:legumes'] };
+  assert.equal(checkRecipe(['200 g green beans'], [p]).filter(x => x.label === 'Beans and lentils').length, 0);
 });
 test('coeliac: flour flagged, rice flour not, oats get a hint', () => {
   assert.equal(checkRecipe(['1 cup plain flour'], [sam]).length, 1);
@@ -37,7 +45,7 @@ test('nut allergy: nutmeg, butternut and coconut are fine, almonds are not', () 
   assert.equal(f[0].level, 'allergy');
 });
 test('results are sorted most serious first', () => {
-  const f = checkRecipe(['1 cup flour', '1 onion'], [sam, { ...dad, custom: [] }]);
+  const f = checkRecipe(['1 cup flour', '1 cup cream'], [sam, { ...dad, custom: [] }]);
   assert.equal(f[0].level, 'allergy');
 });
 test('every preset item has a known level and some words', () => {

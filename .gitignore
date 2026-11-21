@@ -3,3 +3,6 @@ node_modules/
 firestore.rules.deployed
 *-debug.log
 .firebase/
+
+# local test data (real recipe exports)
+test/local/

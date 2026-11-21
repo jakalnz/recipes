@@ -14,9 +14,10 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut, connectAuthEmulator }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache, collection, doc, onSnapshot,
-  getDoc, setDoc, updateDoc, deleteDoc, addDoc, deleteField, serverTimestamp, FieldPath, connectFirestoreEmulator }
+  getDoc, setDoc, updateDoc, deleteDoc, addDoc, deleteField, serverTimestamp, FieldPath, connectFirestoreEmulator, writeBatch }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { PRESETS, LEVELS, presetById, checkRecipe } from './diet.js';
+import { PRESETS, LEVELS, presetById, checkRecipe, itemActive } from './diet.js';
+import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
 
 /* ---------- helpers (same as Shop) ---------- */
 const $ = s => document.querySelector(s);
@@ -33,11 +34,12 @@ function openSheet(html){
 }
 function closeSheet(){ S.liveSheet = null; S.view = ''; $('#sheet').classList.remove('on'); $('#sheet').innerHTML = ''; }
 
-export const CATEGORIES = ['Breakfast', 'Lunch', 'Dinner', 'Baking', 'Desserts', 'Snacks', 'Sides', 'Salads', 'Soups', 'Drinks', 'Sauces'];
+const avgStars = r => { const v = Object.values(r.stars || {}).filter(n => n > 0); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0; };
+const starText = n => n ? '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.round(n)) : '';
 
 /* ---------- state ---------- */
 const S = {
-  user: null, access: null, hid: '', recipes: [], people: [], members: {},
+  user: null, access: null, hid: '', recipes: [], people: [], members: {}, photos: {}, importList: null,
   tab: LS.get('tab') || 'recipes', liveSheet: null, editPerson: null,
 };
 const me = () => ({ uid: S.user.uid, name: (S.user.displayName || S.user.email || '?').split(/[ @]/)[0] });
@@ -118,8 +120,8 @@ function renderRecipes(){
   sel.innerHTML = `<option value="">All categories</option>` + CATEGORIES.map(c => `<option ${c === cur ? 'selected' : ''}>${esc(c)}</option>`).join('');
   const q = $('#rq').value.trim().toLowerCase(), sort = $('#rsort').value;
   let list = S.recipes.filter(r => (!cur || (r.cats || []).includes(cur)) &&
-    (!q || [r.title, ...(r.cats || []), ...(r.ingredients || []).map(i => i.original)].join(' ').toLowerCase().includes(q)));
-  list.sort(sort === 'az' ? byTitle : sort === 'rated' ? (a, b) => (b.avgStars || 0) - (a.avgStars || 0) || byTitle(a, b)
+    (!q || [r.title, ...(r.cats || []), ...(r.tags || []), ...(r.ingredients || []).map(i => i.original)].join(' ').toLowerCase().includes(q)));
+  list.sort(sort === 'az' ? byTitle : sort === 'rated' ? (a, b) => avgStars(b) - avgStars(a) || byTitle(a, b)
     : (a, b) => (b.created?.seconds || 0) - (a.created?.seconds || 0));
   $('#rcount').textContent = S.recipes.length ? `${list.length} of ${S.recipes.length} recipes` : '';
   const mine = myPeople();
@@ -131,7 +133,9 @@ function renderRecipes(){
         const worst = flags[0];
         return `<li class="row" data-a="viewRecipe" data-id="${r.id}"><div class="grow">
           <div class="nm">${esc(r.title)}</div>
-          <div class="sub">${(r.cats || []).map(c => `<span class="pill plain">${esc(c)}</span>`).join('')}
+          <div class="sub">${avgStars(r) ? `<span class="stars" aria-label="${avgStars(r).toFixed(1)} stars">${starText(avgStars(r))}</span>` : ''}
+            ${(r.cats || []).map(c => `<span class="pill plain">${esc(c)}</span>`).join('')}
+            ${(r.tags || []).map(c => `<span class="pill plain">#${esc(c)}</span>`).join('')}
             ${worst ? `<span class="pill ${worst.level === 'allergy' ? 'bad' : 'warn'}">${flags.length} flag${flags.length === 1 ? '' : 's'} for your household</span>` : ''}
             ${r.createdBy ? `<span>by ${esc(r.createdBy.name)}</span>` : ''}</div></div></li>`; }).join('')}</ul>`;
 }
@@ -142,7 +146,7 @@ function needsSummary(p, showConditions){
   for (const pid of p.presets || []){
     const pr = presetById(pid); if (!pr) continue;
     if (showConditions) out.push(pr.label);
-    else out.push(...pr.items.filter(it => !(p.presetOff || []).includes(`${pid}:${it.id}`)).map(it => `${it.label.toLowerCase()} (${LEVELS[it.level].short})`));
+    else out.push(...pr.items.filter(it => itemActive(p, pid, it)).map(it => `${it.label.toLowerCase()} (${LEVELS[it.level].short})`));
   }
   for (const c of p.custom || []) out.push(`${c.item} (${LEVELS[c.level]?.short || c.level})`);
   return [...new Set(out)];
@@ -162,18 +166,18 @@ function renderFamily(){
 }
 
 function openPerson(id, h){
-  const p = id ? S.people.find(x => x.id === id) : { name: '', household: h || S.hid, presets: [], presetOff: [], custom: [], showConditions: true };
+  const p = id ? S.people.find(x => x.id === id) : { name: '', household: h || S.hid, presets: [], presetOff: [], presetOn: [], custom: [], showConditions: true };
   if (!p) return closeSheet();
   S.liveSheet = null; S.view = '';
   S.editPerson = structuredClone(p);
   drawPerson();
 }
 function drawPerson(){
-  const p = S.editPerson, on = new Set(p.presets), off = new Set(p.presetOff || []);
+  const p = S.editPerson, on = new Set(p.presets);
   const group = (kind, title) => `<h3>${title}</h3>` + PRESETS.filter(x => x.kind === kind).map(pr => `
     <label class="cb"><input type="checkbox" data-a="pPreset" data-p="${pr.id}" ${on.has(pr.id) ? 'checked' : ''}> <span>${esc(pr.label)}</span></label>
-    ${on.has(pr.id) && pr.items.length > 1 ? `<div class="card"><p class="note">${esc(pr.note || '')}</p>${pr.items.map(it => `
-      <label class="cb"><input type="checkbox" data-a="pItem" data-k="${pr.id}:${it.id}" ${off.has(`${pr.id}:${it.id}`) ? '' : 'checked'}>
+    ${on.has(pr.id) && (pr.items.length > 1 || pr.items.some(it => it.optional)) ? `<div class="card"><p class="note">${esc(pr.note || '')}</p>${pr.items.map(it => `
+      <label class="cb"><input type="checkbox" data-a="pItem" data-k="${pr.id}:${it.id}" data-opt="${it.optional ? 1 : ''}" ${itemActive(p, pr.id, it) ? 'checked' : ''}>
         <span>${esc(it.label)}<small>${esc(LEVELS[it.level].label)} · e.g. ${esc(it.words.slice(0, 5).join(', '))}</small></span></label>`).join('')}</div>`
       : on.has(pr.id) && pr.note ? `<p class="note">${esc(pr.note)}</p>` : ''}`).join('');
   openSheet(`<h2>${p.id ? esc(p.name) : 'Add a person'}</h2>
@@ -206,7 +210,7 @@ async function savePerson(){
   readPersonForm();
   const p = S.editPerson;
   if (!p.name){ toast('Add a name first'); return; }
-  const data = { name: p.name, household: p.household, presets: p.presets, presetOff: p.presetOff || [], custom: p.custom || [], showConditions: p.showConditions !== false, updatedBy: me() };
+  const data = { name: p.name, household: p.household, presets: p.presets, presetOff: p.presetOff || [], presetOn: p.presetOn || [], custom: p.custom || [], showConditions: p.showConditions !== false, updatedBy: me() };
   try {
     if (p.id) await setDoc(doc(db, 'rxPeople', p.id), data);
     else await addDoc(collection(db, 'rxPeople'), data);
@@ -224,7 +228,8 @@ function openRecipeForm(id){
     <label>Title<input id="r_title" value="${esc(r.title)}"></label>
     <div class="grid2" style="margin-top:6px">${CATEGORIES.map(c => `<label class="cb"><input type="checkbox" data-cat="${esc(c)}" ${(r.cats || []).includes(c) ? 'checked' : ''}> ${esc(c)}</label>`).join('')}</div>
     <label>Serves<input id="r_serves" type="number" min="1" inputmode="numeric" value="${esc(r.servings || '')}"></label>
-    <label>Ingredients, one per line<textarea id="r_ings" rows="8">${esc((r.ingredients || []).map(i => i.original).join('\n'))}</textarea></label>
+    <label>Ingredients, one per line<textarea id="r_ings" rows="8">${esc((r.ingredients || []).map(i => i.heading ? i.original + ':' : i.original).join('\n'))}</textarea></label>
+    <p class="note">A line ending in a colon, like “For the sauce:”, becomes a heading.</p>
     <label>Method, one step per line<textarea id="r_steps" rows="8">${esc((r.steps || []).join('\n'))}</textarea></label>
     <label>Notes and family tips<textarea id="r_notes" rows="3">${esc(r.notes || '')}</textarea></label>
     <label>Source link<input id="r_url" type="url" value="${esc(r.source?.url || '')}" placeholder="https://"></label>
@@ -237,7 +242,7 @@ async function saveRecipe(t){
   const data = {
     title, cats: [...document.querySelectorAll('[data-cat]:checked')].map(x => x.dataset.cat),
     servings: +$('#r_serves').value || null,
-    ingredients: lines($('#r_ings').value).map(original => ({ original })),
+    ingredients: parseIngredients($('#r_ings').value),
     steps: lines($('#r_steps').value), notes: $('#r_notes').value.trim(),
     source: { url: $('#r_url').value.trim() }, updated: serverTimestamp(),
   };
@@ -255,10 +260,23 @@ function viewRecipe(id){
   const flags = checkRecipe(r.ingredients, people);
   const canDelete = r.createdBy?.uid === S.user.uid || isAdmin();
   let host = ''; try { host = r.source?.url ? new URL(r.source.url).hostname.replace(/^www\./, '') : ''; } catch {}
-  openSheet(`<h2>${esc(r.title)}</h2>
+  if (r.hasPhoto && !(id in S.photos)){
+    S.photos[id] = null;
+    getDoc(doc(db, 'rxPhotos', id)).then(s => { S.photos[id] = s.data()?.data || ''; if (S.liveSheet) S.liveSheet(); }).catch(() => {});
+  }
+  const mine = r.stars?.[S.user.uid] || 0, avg = avgStars(r), raters = Object.values(r.stars || {}).filter(n => n > 0).length;
+  const times = [r.prepTime && `Prep ${r.prepTime}`, r.cookTime && `Cook ${r.cookTime}`, r.totalTime && `Total ${r.totalTime}`].filter(Boolean);
+  const nut = r.nutrition?.website;
+  const NUT = [['carbs', 'Carbs', 'g'], ['sugar', 'Sugar', 'g'], ['fat', 'Fat', 'g'], ['satFat', 'Sat. fat', 'g'], ['protein', 'Protein', 'g'], ['fibre', 'Fibre', 'g'], ['kcal', 'Energy', ' kcal']];
+  openSheet(`${S.photos[id] ? `<img class="hero" src="${esc(S.photos[id])}" alt="">` : ''}<h2>${esc(r.title)}</h2>
     <div class="sub">${(r.cats || []).map(c => `<span class="pill plain">${esc(c)}</span>`).join('')}
-      ${r.servings ? `<span>Serves ${esc(r.servings)}</span>` : ''}${r.createdBy ? `<span>Added by ${esc(r.createdBy.name)}</span>` : ''}
+      ${(r.tags || []).map(c => `<span class="pill plain">#${esc(c)}</span>`).join('')}
+      ${r.servings ? `<span>Serves ${esc(r.servingsText && /\d\s*[-–]\s*\d/.test(r.servingsText) ? r.servingsText.replace(/^\D+/, '') : r.servings)}</span>` : ''}
+      ${times.map(t => `<span>${esc(t)}</span>`).join('')}
+      ${r.createdBy ? `<span>Added by ${esc(r.createdBy.name)}${r.imported?.from ? ` from ${esc(r.imported.from)}` : ''}</span>` : ''}
       ${host ? `<a href="${esc(r.source.url)}" target="_blank" rel="noopener">${esc(host)}</a>` : ''}</div>
+    <div class="rate" role="group" aria-label="Your rating">${[1, 2, 3, 4, 5].map(n => `<button data-a="rate" data-id="${r.id}" data-n="${n === mine ? 0 : n}" aria-label="${n} star${n > 1 ? 's' : ''}" class="${n <= mine ? 'on' : ''}">★</button>`).join('')}
+      <span class="note">${mine ? 'Your rating' : 'Tap to rate'}${raters ? ` · family average ${avg.toFixed(1)} from ${raters}` : ''}</span></div>
     <h3>Dietary check</h3>
     <div class="btns" style="margin-top:0"><button class="btn sm ${scope === 'mine' ? 'pri' : ''}" data-a="flagScope" data-s="mine">My household</button>
       <button class="btn sm ${scope === 'all' ? 'pri' : ''}" data-a="flagScope" data-s="all">Whole family</button></div>
@@ -267,13 +285,80 @@ function viewRecipe(id){
           <span class="grow"><strong>${esc(f.person)}</strong>: ${esc(f.label)} · <span class="note">${esc(f.ingredient)}</span>${f.hint ? `<br><span class="note">${esc(f.hint)}</span>` : ''}</span></div>`).join('')
       : `<p class="note">Nothing flagged for ${scope === 'all' ? 'the family' : 'your household'}.</p>`}
     <h3>Ingredients</h3>
-    ${(r.ingredients || []).length ? `<ul>${r.ingredients.map(i => `<li>${esc(i.original)}</li>`).join('')}</ul>` : '<p class="note">None yet.</p>'}
+    ${(r.ingredients || []).length ? `<ul class="ings">${r.ingredients.map(i => i.heading ? `<li class="ih">${esc(i.original)}</li>` : `<li>${esc(i.original)}</li>`).join('')}</ul>` : '<p class="note">None yet.</p>'}
     <h3>Method</h3>
     ${(r.steps || []).length ? `<ol>${r.steps.map(s => `<li style="margin-bottom:8px">${esc(s)}</li>`).join('')}</ol>` : '<p class="note">None yet.</p>'}
-    ${r.notes ? `<h3>Notes</h3><p>${esc(r.notes)}</p>` : ''}
+    ${r.notes ? `<h3>Notes</h3><p style="white-space:pre-line">${esc(r.notes)}</p>` : ''}
+    ${nut ? `<h3>Nutrition</h3><p class="note">From the website, not checked. It may be per serving or for the whole recipe, and some sites get it wrong, so don't rely on it for insulin or Creon yet.</p>
+      <div class="nut">${NUT.filter(([k]) => nut[k] != null).map(([k, l, u]) => `<div><b>${esc(nut[k])}${u}</b><span>${l}</span></div>`).join('')}</div>` : ''}
     <div class="btns"><button class="btn" data-a="editRecipe" data-id="${r.id}">Edit</button>
       ${canDelete ? `<button class="btn danger" data-a="delRecipe" data-id="${r.id}">Delete</button>` : ''}
       <button class="btn pri" data-a="closeSheet">Done</button></div>`);
+}
+
+/* ---------- import from Paprika ---------- */
+const normTitle = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+function openImport(){
+  S.liveSheet = null; S.view = ''; S.importList = null;
+  openSheet(`<h2>Import recipes</h2>
+    <h3>From Paprika</h3>
+    <p class="note">In Paprika, choose Export, pick the recipes (or all of them) and save the <b>.paprikarecipes</b> file. Then choose it here. Photos, ratings, categories, times and source links come across. Nothing is saved until you press Import.</p>
+    <input type="file" id="imp_file" accept=".paprikarecipes,application/zip" hidden>
+    <div class="btns"><button class="btn tag" data-a="impPick">Choose Paprika file</button><button class="btn" data-a="closeSheet">Cancel</button></div>
+    <p class="note" id="impStatus"></p>
+    <h3>From a web link or photo</h3><p class="note">Coming next.</p>`);
+}
+async function loadImportFile(file){
+  $('#impStatus').textContent = 'Reading…';
+  try {
+    const { recipes, skipped } = await readPaprika(await file.arrayBuffer());
+    const byUid = new Set(S.recipes.map(r => r.source?.paprikaUid).filter(Boolean)), byTitle = new Set(S.recipes.map(r => normTitle(r.title)));
+    S.importList = { file: file.name, skipped, items: recipes.map(x => {
+      const dupe = (x.uid && byUid.has(x.uid)) || byTitle.has(normTitle(x.title));
+      return { ...x, dupe, on: !dupe };
+    }) };
+    drawImport();
+  } catch (e){ console.error(e); $('#impStatus').textContent = e.message || "Couldn't read that file."; }
+}
+function drawImportCount(){
+  const n = S.importList.items.filter(x => x.on).length, b = $('#impGoBtn');
+  if (b){ b.textContent = `Import ${n} recipe${n === 1 ? '' : 's'}`; b.disabled = !n; }
+}
+function drawImport(){
+  const L = S.importList, dupes = L.items.filter(x => x.dupe).length;
+  openSheet(`<h2>Import from Paprika</h2>
+    <p class="note">${L.items.length} recipes in ${esc(L.file)}.${dupes ? ` ${dupes} already in the book and unticked.` : ''}${L.skipped.length ? ` ${L.skipped.length} couldn't be read.` : ''}
+      Categories marked <i>guess</i> had none in Paprika, so they were guessed from the title. You can change them after importing. Your Paprika stars become your rating.</p>
+    <div class="btns" style="margin-top:6px"><button class="btn sm" data-a="impAll">All new</button><button class="btn sm" data-a="impNone">None</button></div>
+    ${L.items.map((x, n) => `<label class="cb imp"><input type="checkbox" data-a="impToggle" data-n="${n}" ${x.on ? 'checked' : ''}>
+      <span>${esc(x.title)}${x.dupe ? ' <span class="pill warn">already in book</span>' : ''}
+      <small>${[...x.recipe.cats.map(c => c + (x.guessed ? ' (guess)' : '')), ...x.recipe.tags.map(t => '#' + t)].map(esc).join(' · ') || 'No category'}${x.stars ? ' · ' + '★'.repeat(x.stars) : ''}${x.photo ? ' · photo' : ''}${x.recipe.nutrition ? ' · nutrition' : ''}</small></span></label>`).join('')}
+    <p class="note" id="impStatus"></p>
+    <div class="btns"><button class="btn pri" id="impGoBtn" data-a="impGo"></button><button class="btn" data-a="closeSheet">Cancel</button></div>`);
+  drawImportCount();
+}
+async function runImport(){
+  const items = S.importList.items.filter(x => x.on); if (!items.length) return;
+  const btn = $('#impGoBtn'), status = m => { const s = $('#impStatus'); if (s) s.textContent = m; };
+  btn.disabled = true;
+  let done = 0;
+  try {
+    for (let i = 0; i < items.length; i += 15){   // small batches keep each write well under Firestore's request size limit
+      const b = writeBatch(db);
+      for (const x of items.slice(i, i + 15)){
+        const ref = doc(collection(db, 'rxRecipes'));
+        b.set(ref, { ...x.recipe, hasPhoto: !!x.photo, stars: x.stars ? { [S.user.uid]: x.stars } : {},
+          createdBy: me(), created: serverTimestamp(), updated: serverTimestamp() });
+        if (x.photo) b.set(doc(db, 'rxPhotos', ref.id), { data: x.photo });
+      }
+      await b.commit();
+      done = Math.min(items.length, i + 15); status(`Imported ${done} of ${items.length}…`);
+    }
+    closeSheet(); S.tab = 'recipes'; render(); toast(`Imported ${done} recipe${done === 1 ? '' : 's'}`);
+  } catch (e){
+    console.error(e); btn.disabled = false;
+    status(`Stopped after ${done} of ${items.length}: ${e.message}. Choose the file again to import the rest; recipes already imported will be unticked.`);
+  }
 }
 
 /* ---------- settings ---------- */
@@ -313,14 +398,22 @@ const A = {
   saveRecipe,
   delRecipe: async t => { const r = S.recipes.find(x => x.id === t.dataset.id);
     if (!r || !confirm(`Delete “${r.title}” for the whole family? This can't be undone.`)) return;
-    try { await deleteDoc(doc(db, 'rxRecipes', r.id)); closeSheet(); toast('Deleted'); } catch (e){ toast("Couldn't delete"); } },
+    try { await deleteDoc(doc(db, 'rxRecipes', r.id)); if (r.hasPhoto) deleteDoc(doc(db, 'rxPhotos', r.id)).catch(() => {}); closeSheet(); toast('Deleted'); } catch (e){ toast("Couldn't delete"); } },
+  rate: async t => { try { await updateDoc(doc(db, 'rxRecipes', t.dataset.id), new FieldPath('stars', S.user.uid), +t.dataset.n || deleteField()); } catch (e){ toast("Couldn't save your rating"); } },
+  importer: openImport,
+  impPick: () => $('#imp_file').click(),
+  impAll: () => { S.importList.items.forEach(x => x.on = !x.dupe); drawImport(); },
+  impNone: () => { S.importList.items.forEach(x => x.on = false); drawImport(); },
+  impToggle: t => { S.importList.items[+t.dataset.n].on = t.checked; drawImportCount(); },
+  impGo: runImport,
   flagScope: t => { LS.set('flagScope', t.dataset.s); S.liveSheet?.(); },
   newPerson: t => openPerson(null, t.dataset.h),
   editPerson: t => openPerson(t.dataset.id),
   pPreset: t => { readPersonForm(); const p = S.editPerson, id = t.dataset.p;
     p.presets = t.checked ? [...new Set([...p.presets, id])] : p.presets.filter(x => x !== id); drawPerson(); },
-  pItem: t => { readPersonForm(); const p = S.editPerson, k = t.dataset.k, off = new Set(p.presetOff || []);
-    t.checked ? off.delete(k) : off.add(k); p.presetOff = [...off]; },
+  pItem: t => { readPersonForm(); const p = S.editPerson, k = t.dataset.k;
+    if (t.dataset.opt){ const s = new Set(p.presetOn || []); t.checked ? s.add(k) : s.delete(k); p.presetOn = [...s]; }
+    else { const s = new Set(p.presetOff || []); t.checked ? s.delete(k) : s.add(k); p.presetOff = [...s]; } },
   pAddCustom: () => { readPersonForm(); const item = $('#p_custom').value.trim(); if (!item) return;
     S.editPerson.custom = [...(S.editPerson.custom || []), { item, level: $('#p_level').value }]; drawPerson(); $('#p_custom')?.focus(); },
   pDelCustom: t => { readPersonForm(); S.editPerson.custom.splice(+t.dataset.n, 1); drawPerson(); },
@@ -350,6 +443,7 @@ document.addEventListener('change', e => {
   if (t.dataset.aChange && CH[t.dataset.aChange]) CH[t.dataset.aChange](t);
   if (t.id === 'rcat'){ LS.set('cat', t.value); renderRecipes(); }
   if (t.id === 'rsort') renderRecipes();
+  if (t.id === 'imp_file' && t.files[0]) loadImportFile(t.files[0]);
 });
 $('#rq').addEventListener('input', renderRecipes);
 document.addEventListener('keydown', e => {

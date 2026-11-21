@@ -54,6 +54,12 @@ service cloud.firestore {
         allow write: if family() && request.auth.uid == uid;
       }
     }
+    // One photo per recipe, as a data URL (kept out of the recipe doc so lists stay small).
+    match /rxPhotos/{id} {
+      allow read, delete: if family();
+      allow write: if family() && request.resource.data.data is string
+                    && request.resource.data.data.size() < 1000000;
+    }
     match /rxPlans/{h}/{document=**} {
       allow read, write: if family() && hid() == h;
     }
