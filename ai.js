@@ -12,8 +12,13 @@ export function getAi(){
   try { return JSON.parse(localStorage.getItem('rx.ai') || 'null') || {}; } catch { return {}; }
 }
 export function setAi(v){ try { v ? localStorage.setItem('rx.ai', JSON.stringify(v)) : localStorage.removeItem('rx.ai'); } catch {} }
-export const aiReady = (a = getAi()) => !!(a.provider && a.key && (a.provider === 'anthropic' || a.model));
-export const canReadLinks = (a = getAi()) => aiReady(a) && a.provider === 'anthropic';
+// The family's shared key (a Firebase function), used when this phone has no key of its own.
+let family = null;
+export const setFamilyAi = fn => { family = fn; };
+const ownKey = a => !!(a.provider && a.key && (a.provider === 'anthropic' || a.model));
+export const usingFamily = (a = getAi()) => !ownKey(a) && !!family;
+export const aiReady = (a = getAi()) => ownKey(a) || !!family;
+export const canReadLinks = (a = getAi()) => ownKey(a) ? a.provider === 'anthropic' : !!family;
 
 export const INSTRUCTIONS = `You turn recipes into structured data for a family recipe app in New Zealand.
 Copy the recipe faithfully: keep every quantity and unit exactly as written (the app converts units itself), keep the cook's own wording, and never invent amounts that are not there.
@@ -35,6 +40,7 @@ export function copyPrompt(kind, { url = '', text = '' } = {}){
 // input: { images?: [dataURL], text?: string, url?: string }  →  parsed recipe JSON (RECIPE_SCHEMA shape)
 export async function extractRecipe(input, a = getAi()){
   if (!aiReady(a)) throw new Error('AI is not set up on this phone. Add a key in Settings, or use Copy prompt.');
+  if (usingFamily(a)) return family(input);
   const ask = input.url ? `Read the recipe on this web page: ${input.url}`
     : input.text ? `Read this recipe:\n\n${input.text}` : `Read the recipe in ${input.images?.length > 1 ? 'these photos (they are pages of the same recipe)' : 'this photo'}.`;
   if (a.provider === 'anthropic') return claude(a, ask, input);

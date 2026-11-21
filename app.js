@@ -21,7 +21,8 @@ import { PRESETS, LEVELS, presetById, checkRecipe, itemActive } from './diet.js'
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
 import { metricRecipe } from './units.js';
 import { findRecipe, fromJsonLd, fromAi, parseLooseJson } from './jsonld.js';
-import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS } from './ai.js';
+import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily } from './ai.js';
+import { getFunctions, httpsCallable, connectFunctionsEmulator } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 import { makeIndex, computeRecipe, searchFoods, matchFood, parseLine } from './nutrition.js';
 import { MEALS, MEAL_LABEL, iso, fromIso, addDays, weekStart, weekDays, dayShort, dayLong, shoppingList, matchShop, guessCategory, DEFAULT_PANTRY, isPantry } from './planner.js';
 
@@ -63,9 +64,17 @@ const EMU = ['localhost', '127.0.0.1'].includes(location.hostname) && new URLSea
 app = initializeApp(EMU ? { ...firebaseConfig, projectId: 'demo-recipes' } : firebaseConfig, EMU ? 'emu' : undefined);
 auth = getAuth(app);
 db = initializeFirestore(app, { localCache: EMU ? memoryLocalCache() : persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+const fns = getFunctions(app, 'australia-southeast1');
+// the family's shared AI key lives in this server function
+const readRecipeFn = httpsCallable(fns, 'readRecipe', { timeout: 180000 });
+async function familyRead(input){
+  try { return (await readRecipeFn(input)).data; }
+  catch (e){ console.error(e); throw new Error(e.code === 'functions/not-found' || e.code === 'functions/internal' && /not found|404/i.test(e.message) ? "The family AI isn't set up on the server yet." : e.message || 'The family AI had a problem.'); }
+}
 if (EMU){
   connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
   connectFirestoreEmulator(db, '127.0.0.1', 8181);
+  connectFunctionsEmulator(fns, '127.0.0.1', 5001);
   document.title = 'Recipes (emulator)';
   // test sign-in without the popup: __emuSignIn('aunt.test@example.com')
   window.__emuSignIn = async email => {
@@ -127,7 +136,8 @@ async function start(){
   S.hid = S.access.members?.[S.user.email] || '';
   if (!S.hid) return notAllowed();
   $('#login').hidden = true; $('#app').hidden = false;
-  unsubs.push(onSnapshot(accessRef(), s => { S.access = s.data() || {}; S.hid = S.access.members?.[S.user.email] || ''; if (!S.hid) return notAllowed(); render(); if (S.view === 'settings') openSettings(); }, denied));
+  unsubs.push(onSnapshot(accessRef(), s => { S.access = s.data() || {}; S.hid = S.access.members?.[S.user.email] || ''; if (!S.hid) return notAllowed();
+    setFamilyAi(S.access.ai?.enabled ? familyRead : null); render(); if (S.view === 'settings') openSettings(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxRecipes'), s => { S.recipes = s.docs.map(d => ({ id: d.id, ...d.data() })); convertOld(); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxPeople'), s => { S.people = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name)); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxMembers'), s => { S.members = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); }, denied));
@@ -738,7 +748,7 @@ function openImport(){
   S.liveSheet = null; S.view = ''; S.importList = null; S.imPhotos = null;
   const ai = getAi(), ready = aiReady(ai);
   openSheet(`<h2>Add recipes</h2>
-    <p class="note">${ready ? `AI on this phone: ${esc(PROVIDERS[ai.provider])}.` : 'No AI key on this phone, so photos and links use the free Copy prompt route. You can add a key in Settings.'}</p>
+    <p class="note">${usingFamily(ai) ? `Using the family AI (up to ${+S.access.ai?.dailyLimit || 20} reads a day each).` : ready ? `AI on this phone: ${esc(PROVIDERS[ai.provider])}.` : 'No AI on this phone, so photos and links use the free Copy prompt route.'}</p>
     <h3>From a web page</h3>
     <label>Recipe link<input id="im_url" type="url" inputmode="url" placeholder="https://…" autocomplete="off"></label>
     <div class="btns" style="margin-top:6px"><button class="btn tag" data-a="imUrl">${canReadLinks(ai) ? 'Read the page' : 'Copy prompt for a chatbot'}</button></div>
@@ -892,8 +902,13 @@ function openSettings(){
       <button class="btn sm pri" data-a="addMember">Add</button></div>` : ''}
     ${standalone() ? '' : `<h3>App</h3><p class="note">Install Recipes so it opens full screen and shows up in your phone's app search, like Shop.</p>
     <div class="btns" style="margin-top:6px"><button class="btn sm" data-a="install">Install as an app</button></div>`}
-    <h3>AI for photos and links (this phone only)</h3>
-    <p class="note">Optional. Without a key you can still use the free Copy prompt route with any chatbot. The key is stored on this phone only, never in the family database. Use a key with a monthly spend limit.</p>
+    ${isAdmin() ? `<h3>Family AI (shared key)</h3>
+    <p class="note">Lets everyone read recipes from photos, links and text using the family's Claude key, which is kept on the server. Each person has a daily limit; set a monthly spend limit on the key in the Claude Console too.</p>
+    <label class="cb"><input type="checkbox" data-a-change="famAi" ${S.access.ai?.enabled ? 'checked' : ''}> <span>Family AI on</span></label>
+    <div class="mini"><span class="grow">Recipe reads per person per day</span><input type="number" min="1" max="200" inputmode="numeric" value="${+S.access.ai?.dailyLimit || 20}" data-a-change="famLimit" style="max-width:90px" aria-label="Daily limit"></div>`
+    : S.access.ai?.enabled ? `<h3>Family AI</h3><p class="note">On. You can read up to ${+S.access.ai?.dailyLimit || 20} recipes a day from photos, links and text.</p>` : ''}
+    <h3>${S.access.ai?.enabled ? 'Your own AI key (optional)' : 'AI for photos and links (this phone only)'}</h3>
+    <p class="note">${S.access.ai?.enabled ? "Not needed while the family AI is on. If you add one, this phone uses it instead." : 'Optional. Without a key you can still use the free Copy prompt route with any chatbot.'} A key is stored on this phone only, never in the family database. Use a key with a monthly spend limit.</p>
     <label>AI service<select id="ai_p"><option value="">None</option>${Object.entries(PROVIDERS).map(([k, v]) => `<option value="${k}" ${getAi().provider === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
     <div id="ai_fields"></div>
     <div class="btns" style="margin-top:6px"><button class="btn sm pri" data-a="aiSave">Save</button>${aiReady() ? '<button class="btn sm danger" data-a="aiRemove">Remove key</button>' : ''}
@@ -1037,6 +1052,8 @@ const CH = {
   pLevel: t => { readPersonForm(); S.editPerson.custom[+t.dataset.n].level = t.value; },
   fmRsvp: async t => { const v = t.value === '' ? deleteField() : Math.max(0, +t.value || 0);
     try { await updateDoc(doc(db, 'rxFamilyMeals', t.dataset.id), new FieldPath('rsvp', S.hid), v); } catch (e){ toast("Couldn't save"); } },
+  famAi: t => adminWrite(() => updateDoc(accessRef(), new FieldPath('ai', 'enabled'), t.checked), t.checked ? 'Family AI on' : 'Family AI off'),
+  famLimit: t => { const n = Math.min(200, Math.max(1, Math.round(+t.value) || 20)); adminWrite(() => updateDoc(accessRef(), new FieldPath('ai', 'dailyLimit'), n), 'Limit saved'); },
   srName: t => { const x = S.shop.rows[+t.dataset.n]; x.name = t.value.trim() || x.name;
     const m = S.shop.items.length ? matchShop(x.name, S.shop.items) : null; x.matchId = m?.item.id || ''; x.cat = guessCategory(x.name, S.shop.cats); drawShopList(); },
   srCat: t => { S.shop.rows[+t.dataset.n].cat = t.value; },

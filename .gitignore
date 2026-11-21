@@ -9,3 +9,7 @@ test/local/
 
 # downloaded food composition source data (licences differ; not redistributed)
 data-src/
+
+# Firebase secrets for the local emulator
+functions/.secret.local
+functions/node_modules/
