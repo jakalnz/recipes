@@ -33,6 +33,18 @@ In the browser console, run `__emuSignIn('shop.one@example.com')` (the admin) or
 
 The dietary check is a keyword match to help spot ingredients. It isn't medical advice.
 
+## Adding recipes
+- **Browser button (bookmarklet):** reads the schema.org recipe data most sites embed, or brings the page text if there is none. It opens the app at `#import=…`. Free, no AI.
+- **Android Share:** the installed app is a share target (`?url=` / `?text=`).
+- **AI** (`ai.js`): reads photos, pasted text and links. Providers:
+  - Claude through the official Anthropic SDK (`@anthropic-ai/sdk@1.4.0` from jsDelivr), default model `claude-opus-5-5`. It uses structured outputs and the `web_fetch` tool for links, and has server-side refusal fallbacks turned on.
+  - Any OpenAI-compatible service.
+  - Google Gemini.
+
+  Keys are stored on each phone only (`localStorage` `rx.ai`). Without a key, **Copy prompt** works with any chatbot: paste its JSON reply back into the app.
+- Everything goes through a review form. Units are converted to metric on save.
+- **Paprika** export import.
+
 ## Nutrition
 Nutrition is worked out per serving, per 100 g and for the whole recipe from published food composition data. Sources are used in this order:
 1. **New Zealand FOODfiles 2024**, © The New Zealand Institute for Plant and Food Research Limited and the Ministry of Health

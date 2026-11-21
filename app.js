@@ -20,6 +20,8 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
 import { PRESETS, LEVELS, presetById, checkRecipe, itemActive } from './diet.js';
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
 import { metricRecipe } from './units.js';
+import { findRecipe, fromJsonLd, fromAi, parseLooseJson } from './jsonld.js';
+import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS } from './ai.js';
 import { makeIndex, computeRecipe, searchFoods, matchFood, parseLine } from './nutrition.js';
 import { MEALS, MEAL_LABEL, iso, fromIso, addDays, weekStart, weekDays, dayShort, dayLong, shoppingList, matchShop, guessCategory, DEFAULT_PANTRY, isPantry } from './planner.js';
 
@@ -136,6 +138,7 @@ async function start(){
   // keep my account record up to date
   setDoc(doc(db, 'rxMembers', S.user.uid), { name: me().name, email: S.user.email, household: S.hid, seen: serverTimestamp() }, { merge: true }).catch(denied);
   render();
+  incomingImport();
 }
 
 // One-off: recipes saved before metric conversion existed get converted (originals kept). Safe to run twice.
@@ -264,12 +267,16 @@ async function savePerson(){
 }
 
 /* ---------- recipes (basic add / view / edit) ---------- */
-function openRecipeForm(id){
-  const r = id ? S.recipes.find(x => x.id === id) : { title: '', cats: [], servings: 4, ingredients: [], steps: [], notes: '', source: {} };
+// draft: an imported recipe to check before saving (from a web page, photo, pasted text or chatbot reply)
+function openRecipeForm(id, draft){
+  const r = id ? S.recipes.find(x => x.id === id) : draft || { title: '', cats: [], servings: 4, ingredients: [], steps: [], notes: '', source: {} };
   if (!r) return closeSheet();
-  S.liveSheet = null; S.view = '';
-  openSheet(`<h2>${id ? 'Edit recipe' : 'Add a recipe'}</h2>
-    <p class="note">Importing from a web link or a photo is coming. For now, type or paste it in.</p>
+  S.liveSheet = null; S.view = ''; S.draft = id ? null : draft || null;
+  const pic = draft?.photo || draft?.photoUrl;
+  openSheet(`<h2>${id ? 'Edit recipe' : draft ? 'Check the recipe' : 'Add a recipe'}</h2>
+    ${draft ? `<p class="note">Read from ${esc(draft.from || 'the import')}. Check it over, fix anything, then Save. Ounces, pounds and °F are converted to metric when you save.</p>` : ''}
+    ${draft?.unclear?.length ? `<p class="warnline">The AI wasn't sure about: ${draft.unclear.map(esc).join('; ')}</p>` : ''}
+    ${pic ? `<img class="formpic" src="${esc(pic)}" alt="">${draft.photoUrl && !draft.photo ? '<p class="note">Photo shown from the website.</p>' : ''}` : ''}
     <label>Title<input id="r_title" value="${esc(r.title)}"></label>
     <div class="grid2" style="margin-top:6px">${CATEGORIES.map(c => `<label class="cb"><input type="checkbox" data-cat="${esc(c)}" ${(r.cats || []).includes(c) ? 'checked' : ''}> ${esc(c)}</label>`).join('')}</div>
     <label>Serves<input id="r_serves" type="number" min="1" inputmode="numeric" value="${esc(r.servings || '')}"></label>
@@ -289,8 +296,15 @@ async function saveRecipe(t){
     servings: +$('#r_serves').value || null,
     ingredients: parseIngredients($('#r_ings').value),
     steps: lines($('#r_steps').value), notes: $('#r_notes').value.trim(),
-    source: { ...(S.recipes.find(x => x.id === id)?.source || {}), url: $('#r_url').value.trim() }, updated: serverTimestamp(),
+    source: { ...(S.recipes.find(x => x.id === id)?.source || S.draft?.source || {}), url: $('#r_url').value.trim() }, updated: serverTimestamp(),
   };
+  const d = !id && S.draft;
+  if (d){   // details the form doesn't show
+    Object.assign(data, { tags: d.tags || [], servingsText: d.servingsText || '', prepTime: d.prepTime || '', cookTime: d.cookTime || '', totalTime: d.totalTime || '',
+      imported: { from: d.from || 'import', at: new Date().toISOString().slice(0, 10) } });
+    if (d.photoUrl && !d.photo) data.photoUrl = d.photoUrl;
+    if (d.photo) data.hasPhoto = true;
+  }
   // what's typed is the new original; convert anything imperial to metric
   const m = metricRecipe({ ingredients: data.ingredients, steps: data.steps });
   if (m.ingredients) data.ingredients = m.ingredients;
@@ -299,7 +313,11 @@ async function saveRecipe(t){
   if (m.stepsWas) data.stepsWas = m.stepsWas; else if (id) data.stepsWas = deleteField();
   try {
     if (id) await updateDoc(doc(db, 'rxRecipes', id), data);
-    else { const ref = await addDoc(collection(db, 'rxRecipes'), { ...data, createdBy: me(), created: serverTimestamp() }); t.dataset.id = ref.id; }
+    else {
+      const ref = await addDoc(collection(db, 'rxRecipes'), { ...data, createdBy: me(), created: serverTimestamp() }); t.dataset.id = ref.id;
+      if (d?.photo) await setDoc(doc(db, 'rxPhotos', ref.id), { data: d.photo }).catch(e => { console.error(e); toast('Saved, but the photo was too big to keep'); });
+      S.draft = null;
+    }
     toast(`Saved ${title}`); viewRecipe(t.dataset.id);
   } catch (e){ console.error(e); toast("Couldn't save the recipe"); }
 }
@@ -320,7 +338,8 @@ function viewRecipe(id){
   const nut = r.nutrition?.website;
   const conv = (r.ingredients || []).some(i => i.was) || !!r.stepsWas, orig = conv && S.showOrig === id;
   const NUT = [['carbs', 'Carbs', 'g'], ['sugar', 'Sugar', 'g'], ['fat', 'Fat', 'g'], ['satFat', 'Sat. fat', 'g'], ['protein', 'Protein', 'g'], ['fibre', 'Fibre', 'g'], ['kcal', 'Energy', ' kcal']];
-  openSheet(`${S.photos[id] ? `<img class="hero" src="${esc(S.photos[id])}" alt="">` : ''}<h2>${esc(r.title)}</h2>
+  const hero = S.photos[id] || (!r.hasPhoto && r.photoUrl) || '';
+  openSheet(`${hero ? `<img class="hero" src="${esc(hero)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}<h2>${esc(r.title)}</h2>
     <div class="sub">${(r.cats || []).map(c => `<span class="pill plain">${esc(c)}</span>`).join('')}
       ${(r.tags || []).map(c => `<span class="pill plain">#${esc(c)}</span>`).join('')}
       ${r.servings ? `<span>Serves ${esc(r.servingsText && /\d\s*[-–]\s*\d/.test(r.servingsText) ? r.servingsText.replace(/^\D+/, '') : r.servings)}</span>` : ''}
@@ -705,16 +724,99 @@ function openPantry(){
 
 /* ---------- import from Paprika ---------- */
 const normTitle = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+// the browser button: runs on a recipe page, reads its recipe data (or its text) and opens this app with it
+const APP_URL = () => location.origin + location.pathname;
+function bookmarklet(){
+  const code = `(()=>{let r=null;const f=o=>{if(!o||typeof o!='object')return null;const t=o['@type'];if(t==='Recipe'||(Array.isArray(t)&&t.includes('Recipe')))return o;for(const v of Array.isArray(o)?o:Object.values(o)){const x=f(v);if(x)return x}return null};`
+    + `for(const s of document.querySelectorAll('script[type="application/ld+json"]')){try{r=f(JSON.parse(s.textContent));if(r)break}catch(e){}}`
+    + `if(r){r=Object.assign({},r);['review','comment','aggregateRating','video','interactionStatistic'].forEach(k=>delete r[k])}`
+    + `const d={url:location.href,title:document.title,ld:r,text:r?'':document.body.innerText.slice(0,30000)};`
+    + `const u='${APP_URL()}#import='+encodeURIComponent(JSON.stringify(d));if(!window.open(u))location.href=u})()`;
+  return 'javascript:' + code;
+}
 function openImport(){
-  S.liveSheet = null; S.view = ''; S.importList = null;
-  openSheet(`<h2>Import recipes</h2>
+  S.liveSheet = null; S.view = ''; S.importList = null; S.imPhotos = null;
+  const ai = getAi(), ready = aiReady(ai);
+  openSheet(`<h2>Add recipes</h2>
+    <p class="note">${ready ? `AI on this phone: ${esc(PROVIDERS[ai.provider])}.` : 'No AI key on this phone, so photos and links use the free Copy prompt route. You can add a key in Settings.'}</p>
+    <h3>From a web page</h3>
+    <label>Recipe link<input id="im_url" type="url" inputmode="url" placeholder="https://…" autocomplete="off"></label>
+    <div class="btns" style="margin-top:6px"><button class="btn tag" data-a="imUrl">${canReadLinks(ai) ? 'Read the page' : 'Copy prompt for a chatbot'}</button></div>
+    <details class="sub-d"><summary>Browser button: one tap on any recipe page (free)</summary>
+      <p class="note">Most recipe sites include the recipe in a standard form. This button reads it straight off the page, with no AI needed. For other pages it brings the page text across.</p>
+      <p><b>On a computer:</b> drag this to your bookmarks bar: <a class="btn sm tag" href="${esc(bookmarklet())}" onclick="return false">Save to Recipes</a></p>
+      <p><b>On a phone:</b> 1. Bookmark any page. 2. <button class="link" data-a="imCopyBm">Copy the button code</button>. 3. Edit the bookmark: name it <b>Save to Recipes</b> and paste the code over its address.
+        Then on a recipe page, <b>Android Chrome:</b> type “Save to Recipes” in the address bar and tap the bookmark. <b>iPhone Safari:</b> open Bookmarks and tap it.</p>
+      <p class="note">On Android you can also Share a recipe page to this app once it's installed.</p>
+    </details>
+    <h3>From a photo</h3>
+    <p class="note">A cookbook page, a magazine or a handwritten family card. Several photos for a long recipe are fine.</p>
+    <input type="file" id="im_photo" accept="image/*" multiple hidden>
+    <div class="btns" style="margin-top:6px"><button class="btn tag" data-a="imPhotoPick">${ready ? 'Take or choose photos' : 'Choose photos'}</button>
+      ${ready ? '' : '<button class="btn" data-a="imPhotoPrompt">Copy prompt for a chatbot</button>'}</div>
+    <h3>Paste the recipe text</h3>
+    <label>Text<textarea id="im_text" rows="5" placeholder="Paste a recipe from an email, a message, a website…"></textarea></label>
+    <div class="btns" style="margin-top:6px">${ready ? '<button class="btn tag" data-a="imText">Read it</button>' : ''}<button class="btn" data-a="imTextPrompt">Copy prompt for a chatbot</button></div>
+    <details class="sub-d" id="im_replybox"><summary>Paste a chatbot's reply</summary>
+      <p class="note">Used the Copy prompt route? Paste the chatbot's whole answer here.</p>
+      <label>Reply<textarea id="im_reply" rows="5"></textarea></label>
+      <div class="btns" style="margin-top:6px"><button class="btn tag" data-a="imReply">Use this reply</button></div></details>
+    <p class="note" id="im_status" role="status"></p>
     <h3>From Paprika</h3>
     <p class="note">In Paprika, choose Export, pick the recipes (or all of them) and save the <b>.paprikarecipes</b> file. Then choose it here. Photos, ratings, categories, times and source links come across. Nothing is saved until you press Import.</p>
     <input type="file" id="imp_file" accept=".paprikarecipes,application/zip" hidden>
-    <div class="btns"><button class="btn tag" data-a="impPick">Choose Paprika file</button><button class="btn" data-a="closeSheet">Cancel</button></div>
-    <p class="note" id="impStatus"></p>
-    <h3>From a web link or photo</h3><p class="note">Coming next.</p>`);
+    <div class="btns"><button class="btn" data-a="impPick">Choose Paprika file</button><button class="btn" data-a="closeSheet">Close</button></div>
+    <p class="note" id="impStatus"></p>`);
 }
+const imStatus = m => { const s = $('#im_status'); if (s) s.textContent = m; else if (m) toast(m); };
+async function runAi(input, from, extra = {}){
+  imStatus('Reading the recipe… this can take up to a minute.');
+  document.querySelectorAll('.panel [data-a^=im]').forEach(b => b.disabled = true);
+  try {
+    const j = await extractRecipe(input);
+    if (j.found === false){ imStatus("No recipe found there. Try a clearer photo, or paste the text."); return; }
+    openRecipeForm(null, { ...fromAi(j, input.url || ''), from, ...extra });
+  } catch (e){ console.error(e); imStatus(e.message || 'Something went wrong.'); }
+  finally { document.querySelectorAll('.panel [data-a^=im]').forEach(b => b.disabled = false); }
+}
+async function copyForChatbot(kind, opts, hint){
+  try { await navigator.clipboard.writeText(copyPrompt(kind, opts)); } catch (e){ toast("Couldn't copy"); return; }
+  const box = $('#im_replybox'); if (box) box.open = true;
+  imStatus(hint);
+}
+async function photosChosen(files){
+  imStatus('Getting the photos ready…');
+  try {
+    const imgs = [];
+    for (const f of [...files].slice(0, 4)) imgs.push(await resizeImage(f, 1600, 0.85));
+    const thumb = await resizeImage(files[0], 900, 0.72);   // kept as the recipe's photo
+    if (aiReady()) runAi({ images: imgs }, 'a photo', { photo: thumb });
+    else { S.imPhotos = { thumb }; imStatus(`${imgs.length} photo${imgs.length > 1 ? 's' : ''} ready. Tap Copy prompt, attach the same photo in your chatbot, then paste its reply below.`); }
+  } catch (e){ imStatus(e.message); }
+}
+// arriving from the browser button (#import=…) or Android's Share menu (?url= / ?text=)
+function incomingImport(){
+  let data = null;
+  try {
+    if (location.hash.startsWith('#import=')) data = JSON.parse(decodeURIComponent(location.hash.slice(8)));
+    else {
+      const p = new URLSearchParams(location.search), text = p.get('text') || '', url = p.get('url') || (text.match(/https?:\/\/\S+/) || [])[0] || '';
+      if (url || text) data = { url, text: url ? '' : text, title: p.get('title') || '', shared: true };
+    }
+  } catch (e){ console.error(e); toast("Couldn't read what was sent to the app"); }
+  if (!data) return;
+  history.replaceState(null, '', location.pathname + (new URLSearchParams(location.search).has('emu') ? '?emu' : ''));
+  S.tab = 'recipes'; render();
+  const recipe = data.ld && findRecipe(data.ld);
+  if (recipe){ openRecipeForm(null, { ...fromJsonLd(recipe, data.url), from: hostOf(data.url) || 'the web page' }); return; }
+  openImport();
+  if (data.url) $('#im_url').value = data.url;
+  if (data.text) $('#im_text').value = (data.title ? data.title + '\n\n' : '') + data.text;
+  if (data.url && !data.text && canReadLinks()) runAi({ url: data.url }, hostOf(data.url));
+  else if (data.text && aiReady()) runAi({ text: $('#im_text').value, url: data.url }, hostOf(data.url) || 'the page text');
+  else imStatus(data.text ? "This page didn't include recipe data, so its text is below. Use Copy prompt, or tidy it up yourself." : 'Use Copy prompt with any chatbot, then paste its reply.');
+}
+const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
 async function loadImportFile(file){
   $('#impStatus').textContent = 'Reading…';
   try {
@@ -771,6 +873,7 @@ async function runImport(){
 /* ---------- settings ---------- */
 function openSettings(){
   S.liveSheet = null; S.view = 'settings';   // redrawn only when access/family changes
+  setTimeout(drawAiFields, 0);
   const hs = households(), members = Object.entries(S.access.members || {}).sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]));
   const shop = S.access.shop || [];
   openSheet(`<h2>Settings</h2>
@@ -789,8 +892,26 @@ function openSettings(){
       <button class="btn sm pri" data-a="addMember">Add</button></div>` : ''}
     ${standalone() ? '' : `<h3>App</h3><p class="note">Install Recipes so it opens full screen and shows up in your phone's app search, like Shop.</p>
     <div class="btns" style="margin-top:6px"><button class="btn sm" data-a="install">Install as an app</button></div>`}
+    <h3>AI for photos and links (this phone only)</h3>
+    <p class="note">Optional. Without a key you can still use the free Copy prompt route with any chatbot. The key is stored on this phone only, never in the family database. Use a key with a monthly spend limit.</p>
+    <label>AI service<select id="ai_p"><option value="">None</option>${Object.entries(PROVIDERS).map(([k, v]) => `<option value="${k}" ${getAi().provider === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
+    <div id="ai_fields"></div>
+    <div class="btns" style="margin-top:6px"><button class="btn sm pri" data-a="aiSave">Save</button>${aiReady() ? '<button class="btn sm danger" data-a="aiRemove">Remove key</button>' : ''}
+      ${(() => { try { return localStorage.getItem('anthropicKey') && !aiReady() ? '<button class="btn sm" data-a="aiShopKey">Use the key from Shop</button>' : ''; } catch { return ''; } })()}</div>
     <h3>Account</h3><p class="note">${esc(S.user.email)}. Signing out here also signs you out of Shop on this device.</p>
     <div class="btns"><button class="btn" data-a="signout">Sign out</button><button class="btn pri" data-a="closeSheet">Done</button></div>`);
+}
+function drawAiFields(){
+  const box = $('#ai_fields'); if (!box) return;
+  const p = $('#ai_p').value, cur = getAi(), same = cur.provider === p;
+  const key = same ? cur.key : '';
+  box.innerHTML = !p ? '' : `
+    <label>API key<input id="ai_key" type="password" autocomplete="off" value="${esc(key)}" placeholder="${p === 'anthropic' ? 'sk-ant-…' : 'paste the key'}"></label>
+    ${p === 'anthropic' ? `<label>Model<select id="ai_model">${CLAUDE_MODELS.map(([v, l]) => `<option value="${v}" ${(same ? cur.model : '') === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+      <p class="note">Get a key at platform.claude.com, and set a monthly limit there. Claude can also read recipe links directly.</p>`
+    : `<label>Model name<input id="ai_model" value="${esc(same ? cur.model : '')}" placeholder="${p === 'gemini' ? 'e.g. a current Gemini Flash model' : 'e.g. a current GPT mini model'}"></label>
+      ${p === 'openai' ? `<label>Address<input id="ai_base" value="${esc(same ? cur.base || '' : '')}" placeholder="https://api.openai.com/v1"></label>` : ''}
+      <p class="note">Reads photos and pasted text. Reading recipe links needs Claude; otherwise use the browser button.</p>`}`;
 }
 async function adminWrite(fn, ok){
   try { await fn(); if (ok) toast(ok); } catch (e){ console.error(e); toast("Couldn't save that change"); }
@@ -856,6 +977,32 @@ const A = {
   nfReset: () => saveFix(null),
   toggleOrig: t => { S.showOrig = S.showOrig === t.dataset.id ? null : t.dataset.id; S.liveSheet?.(); },
   importer: openImport,
+  imUrl: () => { const url = $('#im_url').value.trim();
+    if (!/^https?:\/\//i.test(url)){ imStatus('Paste the full link, starting with https://'); return; }
+    if (canReadLinks()) runAi({ url }, hostOf(url));
+    else copyForChatbot('url', { url }, aiReady() ? 'Reading links needs a Claude key, so the prompt is copied instead. Paste it into a chatbot that can open web pages, then paste its reply below. Or use the browser button.'
+      : 'Prompt copied. Paste it into a chatbot that can open web pages (ChatGPT, Claude, Gemini), then paste its reply below. Or use the browser button.'); },
+  imCopyBm: async () => { try { await navigator.clipboard.writeText(bookmarklet()); toast('Button code copied'); } catch (e){ toast("Couldn't copy"); } },
+  imPhotoPick: () => $('#im_photo').click(),
+  imPhotoPrompt: () => copyForChatbot('photo', {}, 'Prompt copied. In ChatGPT, Claude or Gemini, attach your photo, paste the prompt, then paste the reply below.'),
+  imText: () => { const text = $('#im_text').value.trim(); if (!text){ imStatus('Paste a recipe first'); return; } runAi({ text }, 'pasted text'); },
+  imTextPrompt: () => { const text = $('#im_text').value.trim(); if (!text){ imStatus('Paste a recipe first'); return; }
+    copyForChatbot('text', { text }, 'Prompt copied, with the recipe in it. Paste it into any chatbot, then paste its reply below.'); },
+  imReply: () => {
+    try { const j = parseLooseJson($('#im_reply').value);
+      if (j.found === false){ imStatus("The chatbot didn't find a recipe."); return; }
+      openRecipeForm(null, { ...fromAi(j, $('#im_url')?.value.trim() || ''), from: 'a chatbot reply', ...(S.imPhotos ? { photo: S.imPhotos.thumb } : {}) });
+    } catch (e){ imStatus(e instanceof SyntaxError ? "That reply isn't complete JSON. Copy the chatbot's whole answer." : e.message); } },
+  aiSave: () => {
+    const provider = $('#ai_p').value;
+    if (!provider){ setAi(null); toast('AI turned off on this phone'); openSettings(); return; }
+    const v = { provider, key: $('#ai_key').value.trim(), model: ($('#ai_model')?.value || '').trim(), base: ($('#ai_base')?.value || '').trim() };
+    if (!v.key){ toast('Paste a key first'); return; }
+    if (provider !== 'anthropic' && !v.model){ toast('Enter the model name'); return; }
+    setAi(v); toast('Saved on this phone'); openSettings(); },
+  aiProvider: () => drawAiFields(),
+  aiShopKey: () => { try { const k = localStorage.getItem('anthropicKey'); if (k){ $('#ai_p').value = 'anthropic'; drawAiFields(); $('#ai_key').value = k; toast('Key copied from Shop. Tap Save.'); } } catch {} },
+  aiRemove: () => { setAi(null); toast('Key removed from this phone'); openSettings(); },
   impPick: () => $('#imp_file').click(),
   impAll: () => { S.importList.items.forEach(x => x.on = !x.dupe); drawImport(); },
   impNone: () => { S.importList.items.forEach(x => x.on = false); drawImport(); },
@@ -904,6 +1051,8 @@ document.addEventListener('change', e => {
   if (t.id === 'rcat'){ LS.set('cat', t.value); renderRecipes(); }
   if (t.id === 'rsort') renderRecipes();
   if (t.id === 'imp_file' && t.files[0]) loadImportFile(t.files[0]);
+  if (t.id === 'im_photo' && t.files.length){ const fs = [...t.files]; t.value = ''; photosChosen(fs); }
+  if (t.id === 'ai_p') drawAiFields();
 });
 $('#rq').addEventListener('input', renderRecipes);
 document.addEventListener('input', e => {

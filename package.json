@@ -10,6 +10,7 @@
     "test:rules": "firebase emulators:exec --only firestore \"node --test test/rules/rules.test.js\""
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^1.4.0",
     "@firebase/rules-unit-testing": "^4.0.1",
     "exceljs": "^4.4.0",
     "firebase": "^11.0.0"
