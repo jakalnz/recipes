@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "recipes",
   "private": true,
   "type": "module",
@@ -7,11 +7,11 @@
     "serve": "node test/serve.js",
     "emu": "firebase emulators:start --only firestore,auth --project demo-recipes",
     "seed": "node test/seed-emulator.js",
-    "test:rules":"firebase emulators:exec --only firestore \"node --test test/rules/rules.test.js\""
+    "test:rules": "firebase emulators:exec --only firestore \"node --test test/rules/rules.test.js\""
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^4.0.1",
+    "exceljs": "^4.4.0",
     "firebase": "^11.0.0"
   }
 }
-

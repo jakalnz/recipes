@@ -60,6 +60,11 @@ service cloud.firestore {
       allow write: if family() && request.resource.data.data is string
                     && request.resource.data.data.size() < 1000000;
     }
+    // Food composition table for nutrition (NZ FOODfiles / AFCD / USDA). Family can read; only Shop accounts load it.
+    match /rxFoods/{part} {
+      allow read: if family();
+      allow write: if shopUser();
+    }
     match /rxPlans/{h}/{document=**} {
       allow read, write: if family() && hid() == h;
     }

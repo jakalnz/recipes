@@ -6,3 +6,6 @@ firestore.rules.deployed
 
 # local test data (real recipe exports)
 test/local/
+
+# downloaded food composition source data (licences differ; not redistributed)
+data-src/

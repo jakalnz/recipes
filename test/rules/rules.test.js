@@ -91,6 +91,13 @@ test('family can store recipe photos, strangers and Shop-only paths cannot', asy
   await assertFails(setDoc(doc(as('aunt'), 'rxPhotos/r2'), { data: 42 }));
   await assertFails(getDoc(doc(as('stranger'), 'rxPhotos/r1')));
 });
+test('food table: family can read, only Shop accounts can change it', async () => {
+  await env.withSecurityRulesDisabled(async ctx => { await setDoc(doc(ctx.firestore(), 'rxFoods/meta'), { parts: 1 }); });
+  await assertSucceeds(getDoc(doc(as('aunt'), 'rxFoods/meta')));
+  await assertFails(setDoc(doc(as('aunt'), 'rxFoods/meta'), { parts: 2 }));
+  await assertSucceeds(setDoc(doc(as('shopA'), 'rxFoods/meta'), { parts: 2 }));
+  await assertFails(getDoc(doc(as('stranger'), 'rxFoods/meta')));
+});
 test('anyone in the family can rate a recipe without changing who added it', async () => {
   await assertSucceeds(updateDoc(doc(as('shopA'), 'rxRecipes/r1'), { 'stars.shopA': 4 }));
 });

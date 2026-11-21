@@ -55,7 +55,7 @@ export function parseTime(s){
   return t;
 }
 // Button text some websites leave in scraped ingredient lists.
-const JUNK = /^(select all( ingredients)?|deselect all|add (all )?(ingredients )?to (my )?(shopping )?list|print( recipe)?|jump to recipe|us customary|metric|imperial|ingredients)$/i;
+const JUNK = /^(select all( ingredients)?|deselect all|add (all )?(ingredients )?to (my )?(shopping )?list|print( recipe)?|jump to recipe|us customary|metric|imperial|ingredients|(\d+\s*x\s*)+)$/i;
 export function parseIngredients(s){
   return clean(s).split('\n').map(x => x.trim()).filter(x => x && !JUNK.test(x)).map(original => {
     const heading = /:\s*$/.test(original) || /^[A-Z][A-Z &'-]{3,}$/.test(original) || /^(other |the )?ingredients (for|to)\b.*$|^other ingredients$/i.test(original);

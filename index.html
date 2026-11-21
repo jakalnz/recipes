@@ -106,6 +106,17 @@ label.cb small{display:block;color:var(--mute);font-weight:400}
 .nut div{background:var(--row);border:1px solid var(--line);border-radius:6px;padding:8px}
 .nut b{display:block;font-family:var(--disp);font-size:18px}.nut span{font-size:13px;color:var(--mute)}
 .link{color:inherit;text-decoration:underline;font-weight:600;font-size:inherit}
+.nut div.key{border-color:var(--ink)}
+.nut em{font-style:normal;color:var(--warn);font-weight:600}
+.warnline{border-left:4px solid var(--warn);padding:6px 10px;background:var(--row);font-size:14px}
+details.sub-d{margin:10px 0}details.sub-d summary{cursor:pointer;font-weight:600;font-size:15px;padding:6px 0}
+.nutlines{list-style:none;padding:0;margin:4px 0}
+.nutlines li{display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
+.nutlines small{color:var(--mute)}.nutlines .st{width:16px;flex:none;font-weight:700;text-align:center}
+.nutlines .s-ok .st{color:var(--ok)}.nutlines .s-check .st{color:var(--warn)}.nutlines .s-unmatched .st,.nutlines .s-no-grams .st{color:var(--danger)}
+.nutlines .s-skipped,.nutlines .s-no-amount{opacity:.65}
+.nfr{max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:0 10px;margin-top:8px;background:var(--row)}
+.nfr label.cb{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
 label.imp{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
 
 #toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:6px;z-index:40;font-weight:500;max-width:90vw;display:none}

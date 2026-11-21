@@ -19,6 +19,7 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
 import { PRESETS, LEVELS, presetById, checkRecipe, itemActive } from './diet.js';
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
 import { metricRecipe } from './units.js';
+import { makeIndex, computeRecipe, searchFoods, matchFood, parseLine } from './nutrition.js';
 
 /* ---------- helpers (same as Shop) ---------- */
 const $ = s => document.querySelector(s);
@@ -333,11 +334,113 @@ function viewRecipe(id){
     <h3>Method</h3>
     ${(r.steps || []).length ? `<ol>${(orig && r.stepsWas ? r.stepsWas : r.steps).map(s =>`<li style="margin-bottom:8px">${esc(s)}</li>`).join('')}</ol>` : '<p class="note">None yet.</p>'}
     ${r.notes ? `<h3>Notes</h3><p style="white-space:pre-line">${esc(r.notes)}</p>` : ''}
-    ${nut ? `<h3>Nutrition</h3><p class="note">From the website, not checked. It may be per serving or for the whole recipe, and some sites get it wrong, so don't rely on it for insulin or Creon yet.</p>
-      <div class="nut">${NUT.filter(([k]) => nut[k] != null).map(([k, l, u]) => `<div><b>${esc(nut[k])}${u}</b><span>${l}</span></div>`).join('')}</div>` : ''}
+    ${nutritionSection(r)}
+    ${nut ? `<details class="sub-d"><summary>What the website said</summary><p class="note">Copied from the website by Paprika. Not checked and sometimes wrong.</p>
+      <div class="nut">${NUT.filter(([k]) => nut[k] != null).map(([k, l, u]) => `<div><b>${esc(nut[k])}${u}</b><span>${l}</span></div>`).join('')}</div></details>` : ''}
     <div class="btns"><button class="btn" data-a="editRecipe" data-id="${r.id}">Edit</button>
       ${canDelete ? `<button class="btn danger" data-a="delRecipe" data-id="${r.id}">Delete</button>` : ''}
       <button class="btn pri" data-a="closeSheet">Done</button></div>`);
+}
+
+/* ---------- nutrition (NZ FOODfiles → AFCD → USDA) ---------- */
+const SRC = { nz: 'NZ', au: 'AU', us: 'US' };
+const SRC_LONG = { nz: 'NZ FOODfiles 2024', au: 'Australian Food Composition Database', us: 'USDA FoodData Central' };
+const HIGH_FAT = 20;   // g fat per serving shown as "higher fat"
+function loadFoods(){
+  if (S.foods || S.foodsLoading) return S.foodsLoading;
+  S.foodsLoading = (async () => {
+    try {
+      const meta = (await getDoc(doc(db, 'rxFoods', 'meta'))).data();
+      if (!meta) throw new Error('The food table has not been loaded yet.');
+      const parts = await Promise.all(Array.from({ length: meta.parts }, (_, i) => getDoc(doc(db, 'rxFoods', 'p' + i))));
+      S.foods = makeIndex({ foods: parts.flatMap(p => JSON.parse(p.data().foods)), sources: meta.sources, fields: meta.fields });
+      S.foodsMeta = meta;
+    } catch (e){ console.error(e); S.foodsError = e.message; S.foodsLoading = null; }
+    S.liveSheet?.();
+  })();
+  return S.foodsLoading;
+}
+const fixesFor = r => {
+  const map = r.nutritionFix || {}, out = {};
+  (r.ingredients || []).forEach((ing, i) => { if (map[ing.original]) out[i] = map[ing.original]; });
+  return out;
+};
+const g1 = v => v == null ? '–' : v >= 100 ? Math.round(v) : v >= 10 ? v.toFixed(0) : v.toFixed(1);
+function nutritionSection(r){
+  if (!(r.ingredients || []).some(i => !i.heading)) return '';
+  if (!S.foods){
+    if (S.foodsError) return `<h3>Nutrition</h3><p class="note">Couldn't load the food table: ${esc(S.foodsError)}</p>`;
+    loadFoods();
+    return `<h3>Nutrition</h3><p class="note">Working out nutrition…</p>`;
+  }
+  const N = computeRecipe(r, S.foods, fixesFor(r));
+  S.nutCache = { id: r.id, N };
+  const view = S.nutView || 'serving';
+  const base = view === 'serving' && N.perServing ? N.perServing : view === '100' && N.per100 ? N.per100 : N.total;
+  const label = base === N.perServing ? `per serving (about ${Math.round(N.servingGrams)} g)` : base === N.per100 ? 'per 100 g' : `whole recipe (${Math.round(N.weight)} g)`;
+  const kcal = base.kJ / 4.184, portions = base.carbs / 15;
+  const checked = r.nutritionChecked;
+  const bad = N.lines.filter(l => l.status === 'unmatched' || l.status === 'no grams'), unsure = N.lines.filter(l => l.status === 'check');
+  const icon = { ok: '✓', check: '?', unmatched: '!', 'no grams': '!', skipped: '–', 'no amount': '–' };
+  return `<h3>Nutrition ${checked ? `<span class="pill plain">checked by ${esc(checked.by)}</span>` : '<span class="pill plain">estimate</span>'}</h3>
+    ${!N.servings ? `<div class="mini"><span class="grow">How many servings does this make?</span><input id="nutServes" type="number" min="1" inputmode="numeric" style="max-width:80px"><button class="btn sm pri" data-a="nutServes" data-id="${r.id}">Set</button></div>` : ''}
+    <div class="btns" style="margin-top:4px">${[['serving', 'Per serving'], ['100', 'Per 100 g'], ['total', 'Whole recipe']].filter(([v]) => v !== 'serving' || N.perServing)
+      .map(([v, l]) => `<button class="btn sm ${view === v || (v === 'total' && base === N.total && view !== '100') ? 'pri' : ''}" data-a="nutView" data-v="${v}">${l}</button>`).join('')}</div>
+    <p class="note">${esc(label)}</p>
+    <div class="nut">
+      <div class="key"><b>${g1(base.carbs)} g</b><span>Carbohydrate${portions >= 0.1 ? ` · ${portions.toFixed(1)} × 15 g` : ''}</span></div>
+      <div><b>${g1(base.sugars)} g</b><span>of which sugars</span></div>
+      <div><b>${g1(base.fibre)} g</b><span>Fibre</span></div>
+      <div class="key"><b>${g1(base.fat)} g</b><span>Fat${base === N.perServing && base.fat >= HIGH_FAT ? ' · <em>higher fat</em>' : ''}</span></div>
+      <div><b>${g1(base.satFat)} g</b><span>Saturated fat</span></div>
+      <div><b>${g1(base.protein)} g</b><span>Protein</span></div>
+      <div><b>${Math.round(base.kJ)} kJ</b><span>${Math.round(kcal)} kcal</span></div>
+      <div><b>${Math.round(base.sodium)} mg</b><span>Sodium (excl. added salt)</span></div>
+    </div>
+    ${bad.length ? `<p class="warnline">${bad.length} ingredient${bad.length > 1 ? 's' : ''} couldn't be worked out and ${bad.length > 1 ? 'are' : 'is'} not included. Open the breakdown and tap Fix.</p>` : ''}
+    ${unsure.length ? `<p class="note">${unsure.length} match${unsure.length > 1 ? 'es' : ''} marked ? may be the wrong food. Worth a look.</p>` : ''}
+    <details class="sub-d" ${S.nutOpen === r.id ? 'open' : ''} data-nut="${r.id}"><summary>How this was worked out</summary>
+      <ul class="nutlines">${N.lines.map(l => `<li class="s-${l.status.replace(' ', '-')}"><span class="st" aria-label="${esc(l.status)}">${icon[l.status] || ''}</span>
+        <span class="grow">${esc(l.text)}<br><small>${l.food ? `${esc(l.food.name.slice(0, 70))} <span class="pill plain">${SRC[l.food.src]}</span> · ${l.grams != null ? `${l.approx ? '≈' : ''}${Math.round(l.grams)} g` : esc(l.how || '')}${l.values ? ` · ${g1(l.values.carbs)} g carbs · ${g1(l.values.fat)} g fat` : ''}`
+          : esc(l.status === 'unmatched' ? 'No matching food found' : l.how || '')}</small></span>
+        <button class="btn sm" data-a="nutFix" data-id="${r.id}" data-i="${l.i}">${l.status === 'ok' || l.status === 'skipped' || l.status === 'no amount' ? 'Change' : 'Fix'}</button></li>`).join('')}</ul>
+      <p class="note">Worked out from raw ingredient weights, so water lost in cooking isn't counted. Sources: ${N.sources.map(s => SRC_LONG[s]).join(', ') || 'none'}.
+        NZ data: New Zealand FOODfiles 2024, © Plant & Food Research and Ministry of Health. AU data © Food Standards Australia New Zealand (CC BY 4.0). US data: USDA FoodData Central (public domain).</p>
+      ${!bad.length ? `<div class="btns" style="margin-top:6px"><button class="btn sm" data-a="nutChecked" data-id="${r.id}">${checked ? 'Remove checked mark' : 'Mark as checked'}</button></div>` : ''}
+    </details>
+    <p class="note">An estimate to help with your own diabetes or Creon plan, not medical advice.</p>`;
+}
+function openNutFix(rid, i){
+  const r = S.recipes.find(x => x.id === rid); if (!r || !S.foods) return;
+  const ing = r.ingredients[i], cur = (r.nutritionFix || {})[ing.original] || {};
+  const line = S.nutCache?.id === rid ? S.nutCache.N.lines.find(l => l.i === i) : null;
+  S.fix = { rid, i, text: ing.original, foodId: cur.foodId || line?.food?.id || '', grams: cur.grams ?? (line?.grams != null ? Math.round(line.grams) : '') };
+  S.liveSheet = null; S.view = '';
+  openSheet(`<h2>Nutrition for one ingredient</h2>
+    <p><b>${esc(ing.original)}</b></p>
+    <label>Search foods<input id="nfQ" value="${esc(parseLine(ing.original).item)}" autocomplete="off"></label>
+    <div id="nfResults"></div>
+    <label>Grams in the whole recipe<input id="nfG" type="number" min="0" step="any" inputmode="decimal" value="${esc(S.fix.grams)}"></label>
+    <p class="note">Weigh it, or use the packet. For example, 1 can of chickpeas drained ≈ 240 g.</p>
+    <div class="btns"><button class="btn pri" data-a="nfSave">Save</button><button class="btn" data-a="nfSkip">Leave it out</button>
+      ${cur.foodId || cur.grams != null || cur.skip ? '<button class="btn" data-a="nfReset">Back to automatic</button>' : ''}<button class="btn" data-a="closeSheet">Cancel</button></div>`);
+  drawFixResults();
+}
+function drawFixResults(){
+  const q = $('#nfQ')?.value.trim(); if (!q) { $('#nfResults').innerHTML = ''; return; }
+  const seen = new Set(), list = [];
+  const cur = S.fix.foodId && S.foods.byId.get(S.fix.foodId);
+  for (const c of [...(cur ? [{ food: cur }] : []), ...matchFood(q, S.foods, 6), ...searchFoods(q, S.foods, 25)]) if (c.food && !seen.has(c.food.id)){ seen.add(c.food.id); list.push(c.food); }
+  $('#nfResults').innerHTML = list.length ? `<div class="nfr">${list.slice(0, 20).map(f => `<label class="cb"><input type="radio" name="nfFood" value="${esc(f.id)}" ${f.id === S.fix.foodId ? 'checked' : ''}>
+    <span>${esc(f.name)} <span class="pill plain">${SRC[f.src]}</span><small>per 100 g: ${g1(f.n[0])} g carbs · ${g1(f.n[3])} g fat${f.m?.cup ? ` · 1 cup ≈ ${Math.round(f.m.cup)} g` : ''}</small></span></label>`).join('')}</div>`
+    : '<p class="note">Nothing found. Try a simpler word, e.g. "beans" or "cheese".</p>';
+}
+async function saveFix(val){
+  const r = S.recipes.find(x => x.id === S.fix.rid); if (!r) return;
+  const map = { ...(r.nutritionFix || {}) };
+  if (val === null) delete map[S.fix.text]; else map[S.fix.text] = val;
+  try { await updateDoc(doc(db, 'rxRecipes', r.id), { nutritionFix: map, nutritionChecked: deleteField() }); S.nutOpen = r.id; viewRecipe(r.id); }
+  catch (e){ console.error(e); toast("Couldn't save that"); }
 }
 
 /* ---------- import from Paprika ---------- */
@@ -446,6 +549,17 @@ const A = {
     if (!r || !confirm(`Delete “${r.title}” for the whole family? This can't be undone.`)) return;
     try { await deleteDoc(doc(db, 'rxRecipes', r.id)); if (r.hasPhoto) deleteDoc(doc(db, 'rxPhotos', r.id)).catch(() => {}); closeSheet(); toast('Deleted'); } catch (e){ toast("Couldn't delete"); } },
   rate: async t => { try { await updateDoc(doc(db, 'rxRecipes', t.dataset.id), new FieldPath('stars', S.user.uid), +t.dataset.n || deleteField()); } catch (e){ toast("Couldn't save your rating"); } },
+  nutView: t => { S.nutView = t.dataset.v; S.liveSheet?.(); },
+  nutFix: t => openNutFix(t.dataset.id, +t.dataset.i),
+  nutServes: async t => { const n = +$('#nutServes').value; if (!(n > 0)) return;
+    try { await updateDoc(doc(db, 'rxRecipes', t.dataset.id), { servings: n }); } catch (e){ toast("Couldn't save"); } },
+  nutChecked: async t => { const r = S.recipes.find(x => x.id === t.dataset.id);
+    try { await updateDoc(doc(db, 'rxRecipes', r.id), { nutritionChecked: r.nutritionChecked ? deleteField() : { by: me().name, uid: S.user.uid, at: Date.now() } }); } catch (e){ toast("Couldn't save"); } },
+  nfSave: () => { const f = document.querySelector('input[name=nfFood]:checked')?.value, g = $('#nfG').value;
+    if (!f && g === ''){ toast('Pick a food or enter grams'); return; }
+    saveFix({ ...(f ? { foodId: f } : {}), ...(g !== '' ? { grams: +g } : {}) }); },
+  nfSkip: () => saveFix({ skip: true }),
+  nfReset: () => saveFix(null),
   toggleOrig: t => { S.showOrig = S.showOrig === t.dataset.id ? null : t.dataset.id; S.liveSheet?.(); },
   importer: openImport,
   impPick: () => $('#imp_file').click(),
@@ -493,6 +607,11 @@ document.addEventListener('change', e => {
   if (t.id === 'imp_file' && t.files[0]) loadImportFile(t.files[0]);
 });
 $('#rq').addEventListener('input', renderRecipes);
+document.addEventListener('input', e => {
+  if (e.target.id === 'nfQ'){ clearTimeout(S.nfT); S.nfT = setTimeout(drawFixResults, 200); }
+});
+document.addEventListener('change', e => { if (e.target.name === 'nfFood') S.fix.foodId = e.target.value; });
+document.addEventListener('toggle', e => { if (e.target.dataset?.nut) S.nutOpen = e.target.open ? e.target.dataset.nut : null; }, true);
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && $('#sheet').classList.contains('on')) closeSheet();
   if (e.key === 'Enter' && e.target.id === 'p_custom') A.pAddCustom();
