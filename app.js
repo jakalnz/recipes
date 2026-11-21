@@ -641,7 +641,7 @@ async function buildShopList(){
   }
   S.shop = { items: shopItems, cats, rows: list.map(x => {
     const m = shopItems.length ? matchShop(x.name, shopItems) : null;
-    return { ...x, on: !x.pantry, matchId: m?.item.id || '', cat: guessCategory(x.name, cats) };
+    return { ...x, on: false, matchId: m?.item.id || '', cat: guessCategory(x.name, cats) };   // nothing ticked: you tick what you need
   }) };
   drawShopList();
 }
@@ -659,11 +659,12 @@ function drawShopList(){
   const main = rows.map((x, n) => ({ x, n })).filter(r => !r.x.pantry), pantry = rows.map((x, n) => ({ x, n })).filter(r => r.x.pantry);
   const count = rows.filter(x => x.on).length;
   openSheet(`<h2>Shopping list</h2>
-    <p class="note">${count} item${count === 1 ? '' : 's'} ticked. Untick anything you already have. Amounts are added up across recipes and scaled to the servings you planned.</p>
+    <p class="note">Tick what you need to buy. Amounts are added up across recipes and scaled to the servings you planned.</p>
+    <div class="btns" style="margin-top:4px"><button class="btn sm" data-a="srAll">Tick all</button><button class="btn sm" data-a="srNone">None</button></div>
     ${main.map(r => row(r.x, r.n)).join('') || '<p class="note">Nothing to buy.</p>'}
     ${pantry.length ? `<h3>Usually in the cupboard</h3>${pantry.map(r => row(r.x, r.n)).join('')}` : ''}
     <div class="btns"><button class="btn sm" data-a="pantryEdit">Edit cupboard staples</button></div>
-    <div class="btns">${canSend ? `<button class="btn pri" data-a="shopSend">Send ${count} to Shop</button>` : ''}
+    <div class="btns">${canSend ? `<button class="btn pri" data-a="shopSend" ${count ? '' : 'disabled'}>Send ${count} to Shop</button>` : ''}
       <button class="btn ${canSend ? '' : 'pri'}" data-a="shopCopy">Copy list</button>${navigator.share ? '<button class="btn" data-a="shopShare">Share</button>' : ''}
       <button class="btn" data-a="closeSheet">Close</button></div>
     ${isAdmin() ? '' : '<p class="note">Sending straight to Shop is only set up for one household so far. Copy or share the list instead.</p>'}`);
@@ -828,7 +829,9 @@ const A = {
   shopList: openShopDays,
   shopBuild: buildShopList,
   srOn: t => { S.shop.rows[+t.dataset.n].on = t.checked; t.closest('.srow').classList.toggle('off', !t.checked);
-    const c = S.shop.rows.filter(x => x.on).length, b = document.querySelector('[data-a=shopSend]'); if (b) b.textContent = `Send ${c} to Shop`; },
+    const c = S.shop.rows.filter(x => x.on).length, b = document.querySelector('[data-a=shopSend]'); if (b){ b.textContent = `Send ${c} to Shop`; b.disabled = !c; } },
+  srAll: () => { S.shop.rows.forEach(x => { if (!x.pantry) x.on = true; }); drawShopList(); },
+  srNone: () => { S.shop.rows.forEach(x => { x.on = false; }); drawShopList(); },
   srNew: t => { S.shop.rows[+t.dataset.n].matchId = ''; drawShopList(); },
   shopSend: sendToShop,
   shopCopy: async () => { try { await navigator.clipboard.writeText(listText()); toast('List copied'); } catch (e){ toast("Couldn't copy"); } },
@@ -838,7 +841,7 @@ const A = {
   pantrySave: async () => {
     const list = $('#pantryTxt').value.split('\n').map(x => x.trim()).filter(Boolean);
     try { await setDoc(doc(db, 'rxHouseholds', S.hid), { pantry: list }, { merge: true }); S.household.pantry = list;
-      S.shop.rows.forEach(x => { const p = isPantry(x.name, list); if (p !== x.pantry){ x.pantry = p; x.on = !p; } }); drawShopList(); toast('Staples saved'); }
+      S.shop.rows.forEach(x => { const p = isPantry(x.name, list); if (p !== x.pantry){ x.pantry = p; if (p) x.on = false; } }); drawShopList(); toast('Staples saved'); }
     catch (e){ console.error(e); toast("Couldn't save"); } },
   nutView: t => { S.nutView = t.dataset.v; S.liveSheet?.(); },
   nutFix: t => openNutFix(t.dataset.id, +t.dataset.i),
