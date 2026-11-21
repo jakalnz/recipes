@@ -80,6 +80,31 @@ $('#signin').onclick = async () => {
 $('#signoutLogin').onclick = () => signOut(auth);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
+/* ---------- install as an app ---------- */
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let installEvt = null;
+const showInstall = on => document.querySelectorAll('#installBtn, #installBtn2').forEach(b => b.hidden = !on);
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; showInstall(true); });
+addEventListener('appinstalled', () => { installEvt = null; showInstall(false); toast('Installed. Find “Recipes” with your other apps.'); });
+if (isIOS && !standalone()) showInstall(true);
+function installHelp(){
+  const ios = isIOS;
+  openSheet(`<h2>Install Recipes as an app</h2>
+    ${ios ? `<ol><li>Open this page in <b>Safari</b> (not from inside Gmail, Messages or Facebook).</li>
+      <li>Tap the <b>Share</b> button, then <b>Add to Home Screen</b>.</li>
+      <li>Make sure <b>Open as Web App</b> is switched on, then tap <b>Add</b>.</li></ol>`
+    : `<ol><li>Open <b>jakalnz.github.io/recipes</b> in <b>Chrome</b> itself, not a link inside another app.</li>
+      <li>Tap <b>⋮</b> (top right), then <b>Install app</b>. If you only see <b>Add to home screen</b>, tap it and choose <b>Install</b>, not <b>Create shortcut</b>.</li>
+      <li>If you already have a shortcut that opens in the browser, remove it first.</li></ol>`}
+    <p class="note">Installed, it opens full screen like Shop and shows up when you search your phone's apps.</p>
+    <div class="btns"><button class="btn pri" data-a="closeSheet">OK</button></div>`);
+}
+async function install(){
+  if (installEvt){ installEvt.prompt(); const { outcome } = await installEvt.userChoice; if (outcome === 'accepted') showInstall(false); installEvt = null; }
+  else installHelp();
+}
+
 function notAllowed(){
   unsubs.forEach(f => f()); unsubs = [];
   $('#app').hidden = true; $('#login').hidden = false; $('#signin').hidden = true;
@@ -399,6 +424,8 @@ function openSettings(){
     <div class="mini"><input id="newEmail" type="email" placeholder="their.email@gmail.com" autocomplete="off">
       <select id="newEmailHh" aria-label="Household">${Object.keys(hs).sort().map(x => `<option value="${x}">${esc(hs[x])}</option>`).join('')}</select>
       <button class="btn sm pri" data-a="addMember">Add</button></div>` : ''}
+    ${standalone() ? '' : `<h3>App</h3><p class="note">Install Recipes so it opens full screen and shows up in your phone's app search, like Shop.</p>
+    <div class="btns" style="margin-top:6px"><button class="btn sm" data-a="install">Install as an app</button></div>`}
     <h3>Account</h3><p class="note">${esc(S.user.email)}. Signing out here also signs you out of Shop on this device.</p>
     <div class="btns"><button class="btn" data-a="signout">Sign out</button><button class="btn pri" data-a="closeSheet">Done</button></div>`);
 }
@@ -409,7 +436,7 @@ async function adminWrite(fn, ok){
 /* ---------- actions ---------- */
 const A = {
   tab: t => { S.tab = t.dataset.tab; LS.set('tab', S.tab); render(); },
-  closeSheet, settings: openSettings,
+  closeSheet, settings: openSettings, install,
   signout: () => { closeSheet(); signOut(auth); },
   addRecipe: () => openRecipeForm(null),
   viewRecipe: t => viewRecipe(t.dataset.id),

@@ -1,5 +1,7 @@
 {
+  "id": "/recipes/",
   "name": "Family Recipes",
+  "description": "Our family recipe book and meal planner",
   "short_name": "Recipes",
   "start_url": "./",
   "scope": "./",
