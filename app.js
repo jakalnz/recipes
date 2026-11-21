@@ -18,6 +18,7 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { PRESETS, LEVELS, presetById, checkRecipe, itemActive } from './diet.js';
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
+import { metricRecipe } from './units.js';
 
 /* ---------- helpers (same as Shop) ---------- */
 const $ = s => document.querySelector(s);
@@ -96,12 +97,22 @@ async function start(){
   if (!S.hid) return notAllowed();
   $('#login').hidden = true; $('#app').hidden = false;
   unsubs.push(onSnapshot(accessRef(), s => { S.access = s.data() || {}; S.hid = S.access.members?.[S.user.email] || ''; if (!S.hid) return notAllowed(); render(); if (S.view === 'settings') openSettings(); }, denied));
-  unsubs.push(onSnapshot(collection(db, 'rxRecipes'), s => { S.recipes = s.docs.map(d => ({ id: d.id, ...d.data() })); render(); }, denied));
+  unsubs.push(onSnapshot(collection(db, 'rxRecipes'), s => { S.recipes = s.docs.map(d => ({ id: d.id, ...d.data() })); convertOld(); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxPeople'), s => { S.people = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name)); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxMembers'), s => { S.members = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); }, denied));
   // keep my account record up to date
   setDoc(doc(db, 'rxMembers', S.user.uid), { name: me().name, email: S.user.email, household: S.hid, seen: serverTimestamp() }, { merge: true }).catch(denied);
   render();
+}
+
+// One-off: recipes saved before metric conversion existed get converted (originals kept). Safe to run twice.
+const converting = new Set();
+function convertOld(){
+  for (const r of S.recipes){
+    if (r.units || converting.has(r.id)) continue;
+    converting.add(r.id);
+    updateDoc(doc(db, 'rxRecipes', r.id), metricRecipe(r)).catch(e => { console.error(e); converting.delete(r.id); });
+  }
 }
 
 /* ---------- render ---------- */
@@ -244,8 +255,14 @@ async function saveRecipe(t){
     servings: +$('#r_serves').value || null,
     ingredients: parseIngredients($('#r_ings').value),
     steps: lines($('#r_steps').value), notes: $('#r_notes').value.trim(),
-    source: { url: $('#r_url').value.trim() }, updated: serverTimestamp(),
+    source: { ...(S.recipes.find(x => x.id === id)?.source || {}), url: $('#r_url').value.trim() }, updated: serverTimestamp(),
   };
+  // what's typed is the new original; convert anything imperial to metric
+  const m = metricRecipe({ ingredients: data.ingredients, steps: data.steps });
+  if (m.ingredients) data.ingredients = m.ingredients;
+  if (m.steps) data.steps = m.steps;
+  data.units = 1;
+  if (m.stepsWas) data.stepsWas = m.stepsWas; else if (id) data.stepsWas = deleteField();
   try {
     if (id) await updateDoc(doc(db, 'rxRecipes', id), data);
     else { const ref = await addDoc(collection(db, 'rxRecipes'), { ...data, createdBy: me(), created: serverTimestamp() }); t.dataset.id = ref.id; }
@@ -267,6 +284,7 @@ function viewRecipe(id){
   const mine = r.stars?.[S.user.uid] || 0, avg = avgStars(r), raters = Object.values(r.stars || {}).filter(n => n > 0).length;
   const times = [r.prepTime && `Prep ${r.prepTime}`, r.cookTime && `Cook ${r.cookTime}`, r.totalTime && `Total ${r.totalTime}`].filter(Boolean);
   const nut = r.nutrition?.website;
+  const conv = (r.ingredients || []).some(i => i.was) || !!r.stepsWas, orig = conv && S.showOrig === id;
   const NUT = [['carbs', 'Carbs', 'g'], ['sugar', 'Sugar', 'g'], ['fat', 'Fat', 'g'], ['satFat', 'Sat. fat', 'g'], ['protein', 'Protein', 'g'], ['fibre', 'Fibre', 'g'], ['kcal', 'Energy', ' kcal']];
   openSheet(`${S.photos[id] ? `<img class="hero" src="${esc(S.photos[id])}" alt="">` : ''}<h2>${esc(r.title)}</h2>
     <div class="sub">${(r.cats || []).map(c => `<span class="pill plain">${esc(c)}</span>`).join('')}
@@ -285,9 +303,10 @@ function viewRecipe(id){
           <span class="grow"><strong>${esc(f.person)}</strong>: ${esc(f.label)} · <span class="note">${esc(f.ingredient)}</span>${f.hint ? `<br><span class="note">${esc(f.hint)}</span>` : ''}</span></div>`).join('')
       : `<p class="note">Nothing flagged for ${scope === 'all' ? 'the family' : 'your household'}.</p>`}
     <h3>Ingredients</h3>
-    ${(r.ingredients || []).length ? `<ul class="ings">${r.ingredients.map(i => i.heading ? `<li class="ih">${esc(i.original)}</li>` : `<li>${esc(i.original)}</li>`).join('')}</ul>` : '<p class="note">None yet.</p>'}
+    ${conv ? `<p class="note">${orig ? 'Showing the original wording.' : 'Converted to metric.'} <button class="link" data-a="toggleOrig" data-id="${r.id}">${orig ? 'Show metric' : 'Show original'}</button></p>` : ''}
+    ${(r.ingredients || []).length ? `<ul class="ings">${r.ingredients.map(i => i.heading ? `<li class="ih">${esc(i.original)}</li>` : `<li>${esc(orig && i.was ? i.was : i.original)}</li>`).join('')}</ul>` : '<p class="note">None yet.</p>'}
     <h3>Method</h3>
-    ${(r.steps || []).length ? `<ol>${r.steps.map(s => `<li style="margin-bottom:8px">${esc(s)}</li>`).join('')}</ol>` : '<p class="note">None yet.</p>'}
+    ${(r.steps || []).length ? `<ol>${(orig && r.stepsWas ? r.stepsWas : r.steps).map(s =>`<li style="margin-bottom:8px">${esc(s)}</li>`).join('')}</ol>` : '<p class="note">None yet.</p>'}
     ${r.notes ? `<h3>Notes</h3><p style="white-space:pre-line">${esc(r.notes)}</p>` : ''}
     ${nut ? `<h3>Nutrition</h3><p class="note">From the website, not checked. It may be per serving or for the whole recipe, and some sites get it wrong, so don't rely on it for insulin or Creon yet.</p>
       <div class="nut">${NUT.filter(([k]) => nut[k] != null).map(([k, l, u]) => `<div><b>${esc(nut[k])}${u}</b><span>${l}</span></div>`).join('')}</div>` : ''}
@@ -400,6 +419,7 @@ const A = {
     if (!r || !confirm(`Delete “${r.title}” for the whole family? This can't be undone.`)) return;
     try { await deleteDoc(doc(db, 'rxRecipes', r.id)); if (r.hasPhoto) deleteDoc(doc(db, 'rxPhotos', r.id)).catch(() => {}); closeSheet(); toast('Deleted'); } catch (e){ toast("Couldn't delete"); } },
   rate: async t => { try { await updateDoc(doc(db, 'rxRecipes', t.dataset.id), new FieldPath('stars', S.user.uid), +t.dataset.n || deleteField()); } catch (e){ toast("Couldn't save your rating"); } },
+  toggleOrig: t => { S.showOrig = S.showOrig === t.dataset.id ? null : t.dataset.id; S.liveSheet?.(); },
   importer: openImport,
   impPick: () => $('#imp_file').click(),
   impAll: () => { S.importList.items.forEach(x => x.on = !x.dupe); drawImport(); },

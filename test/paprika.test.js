@@ -51,6 +51,9 @@ test('reads a Paprika zip with deflated and stored entries', async () => {
   assert.equal(c.stars, 0);
   assert.equal(c.photo, null);
   assert.deepEqual(c.recipe.steps, ['Fry onion.', 'Add paste.']);
+  // converted to metric on import, original kept
+  assert.deepEqual(c.recipe.ingredients[0], { original: '675 g chicken thigh', was: '1 ½ lbs chicken thigh' });
+  assert.equal(c.recipe.units, 1);
 });
 test('rejects files that are not zips', async () => {
   await assert.rejects(readPaprika(new Uint8Array([1, 2, 3])), /Paprika export/);

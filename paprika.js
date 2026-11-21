@@ -1,7 +1,9 @@
 // Reads a Paprika export (.paprikarecipes = zip of gzipped JSON, one per recipe) in the browser or Node 18+.
 // Returns [{ uid, title, recipe, stars, photo, paprikaCats }] ready to save as rxRecipes.
 
-export const CATEGORIES = ['Breakfast', 'Lunch', 'Dinner', 'Baking', 'Desserts', 'Snacks', 'Sides', 'Salads', 'Soups', 'Drinks', 'Sauces'];
+import { metricRecipe } from './units.js';
+
+export const CATEGORIES =['Breakfast', 'Lunch', 'Dinner', 'Baking', 'Desserts', 'Snacks', 'Sides', 'Salads', 'Soups', 'Drinks', 'Sauces'];
 
 // Paprika category (lower case) → app category and/or tag. Anything else becomes a tag as-is.
 const CAT_MAP = {
@@ -95,6 +97,7 @@ export function mapRecipe(p){
     imported: { from: 'Paprika', created: clean(p.created) },
   };
   if (nut) recipe.nutrition = { website: nut, method: 'website', checked: false };
+  Object.assign(recipe, metricRecipe(recipe));   // metric, keeping the original lines in `was` / `stepsWas`
   const stars = p.rating >= 1 && p.rating <= 5 ? Math.round(p.rating) : 0;
   const photo = p.photo_data && p.photo_data.length < 900000 ? `data:image/jpeg;base64,${p.photo_data}` : null;
   return { uid: p.uid || '', title: recipe.title, recipe, stars, photo, guessed: !!guessed, paprikaCats: (p.categories || []).map(c => String(c).trim()) };
