@@ -21,4 +21,10 @@ await put('rxRecipes/coleslaw', { title: str('Crunchy coleslaw'), cats: arr(['Sa
   ingredients: arr(['½ red cabbage, finely sliced', '2 carrots, grated', '½ cup mayonnaise', '1 tbsp cider vinegar'].map(o => map({ original: o }))),
   steps: arr(['Toss the cabbage and carrot.', 'Mix the mayonnaise and vinegar, then stir through.']),
   createdBy: map({ uid: 'seed', name: 'Seed' }) });
+// a pretend Shop list for the Shop household (same fields Shop uses)
+await put('meta/settings', { cats: arr(['Fruit & Veg', 'Bakery', 'Meat & Fish', 'Deli & Chilled', 'Dairy & Eggs', 'Frozen', 'Pantry', 'Tins & Jars', 'Snacks', 'Drinks', 'Other']) });
+for (const [id, name, cat, onList, ticked] of [['eggs', 'Eggs', 'Dairy & Eggs', false, false], ['onion', 'Onion', 'Fruit & Veg', false, false],
+  ['garlic', 'Garlic', 'Fruit & Veg', true, true], ['milk', 'Milk', 'Dairy & Eggs', true, false]])
+  await put(`items/${id}`, { name: str(name), cat: str(cat), misc: { booleanValue: false }, onList: { booleanValue: onList }, ticked: { booleanValue: ticked },
+    qty: str(''), note: str(onList ? 'the blue one' : ''), count: { integerValue: '3' }, pos: map({}) });
 console.log('Seeded: sign in as shop.one@example.com (Shop + admin) or aunt.test@example.com (another household).');

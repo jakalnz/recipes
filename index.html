@@ -117,6 +117,27 @@ details.sub-d{margin:10px 0}details.sub-d summary{cursor:pointer;font-weight:600
 .nutlines .s-skipped,.nutlines .s-no-amount{opacity:.65}
 .nfr{max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:0 10px;margin-top:8px;background:var(--row)}
 .nfr label.cb{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
+.weeknav{display:flex;align-items:center;gap:10px;padding:12px 14px 0}.weeknav b{font-family:var(--disp);font-size:18px}
+.day{background:var(--row);border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-top:10px;padding:8px 14px}
+.day.today{box-shadow:inset 5px 0 0 var(--tag)}.day.past{opacity:.7}
+.dayhead{display:flex;align-items:center;gap:8px}.dayhead b{font-family:var(--disp);font-size:17px}.dayhead span{color:var(--mute);flex:1}
+ul.plan{list-style:none;margin:4px 0 0;padding:0}
+ul.plan li{display:flex;align-items:flex-start;gap:8px;padding:7px 0;border-top:1px solid var(--line)}
+ul.plan .meal{font-size:12px;color:var(--mute);width:70px;flex:none;padding-top:3px;text-transform:uppercase;letter-spacing:.04em}
+ul.plan .grow{flex:1;cursor:pointer}ul.plan small{display:block;color:var(--mute)}
+.x{color:var(--mute);padding:2px 6px;font-size:15px}
+.fm{border:1.5px solid var(--tag);border-radius:8px;padding:8px 10px;margin:8px 0;cursor:pointer;background:color-mix(in srgb,var(--row),var(--tag) 8%)}
+.fm small{display:block;color:var(--mute)}
+#planBody .fm{margin:8px 14px}.day .fm{margin:8px 0}
+.pick{max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:0 10px;margin-top:6px;background:var(--row)}
+.pick label.cb{padding:7px 0;border-bottom:1px solid var(--line);margin:0}
+.warntext{color:var(--warn)}
+.srow{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)}
+.srow>input{width:20px;height:20px;margin-top:8px;flex:none}.srow .grow{flex:1;min-width:0}
+.srow small{display:block;color:var(--mute);font-size:13px;margin-top:2px}.srow.off{opacity:.55}
+.sname{width:100%;border:1px solid transparent;background:transparent;font-weight:600;font-size:16px;padding:4px 2px;border-radius:4px}
+.sname:focus{border-color:var(--ink);background:var(--row)}
+.srow select{font-size:13px;padding:2px;border:1px solid var(--line);border-radius:4px;background:var(--row)}
 label.imp{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
 
 #toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:6px;z-index:40;font-weight:500;max-width:90vw;display:none}
@@ -177,7 +198,7 @@ label.imp{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
     </section>
 
     <section id="vPlan" hidden>
-      <p class="empty">Meal planning for your household is coming next.<br>You'll plan the week, share family meals and send ingredients to Shop.</p>
+      <div id="planBody"></div>
     </section>
 
     <section id="vFamily" hidden>

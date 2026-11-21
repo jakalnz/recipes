@@ -38,7 +38,7 @@ export function parseLine(text){
   if (m){
     const a = num(m[1]), b = m[2] ? num(m[2]) : null;
     res.qty = b ? (a + b) / 2 : a;
-    let rest = m[3].replace(/^x\s+/i, '').replace(/^\([^)]*\)\s*/, '').replace(/^table\s+spoons?\b/i, 'tbsp').replace(/^tea\s+spoons?\b/i, 'tsp')
+    let rest = m[3].replace(/^x\s+/i, '').replace(/^\([^)]*\)\s*/, '').replace(/^(small|medium|large|big)\s*(to|or|-|–|\/)\s*(small|medium|large|big)\s+/i, '').replace(/^table\s+spoons?\b/i, 'tbsp').replace(/^tea\s+spoons?\b/i, 'tsp')
       .replace(/^(small|medium|large|big|heaped|heaping|level|rounded|scant|generous)\s+(?=(bunch|handful|clove|cloves|can|tin|packet|piece|cup|cups|tbsp|tsp|tablespoons?|teaspoons?)\b)/i, '');
     for (const [u, re] of UNITS){ const um = rest.match(re); if (um){ res.unit = u; rest = rest.slice(um[0].length).replace(/^\.?\s*(of\s+)?/i, ''); break; } }
     res.item = rest;

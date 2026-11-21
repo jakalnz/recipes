@@ -14,12 +14,14 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut, connectAuthEmulator }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache, collection, doc, onSnapshot,
-  getDoc, setDoc, updateDoc, deleteDoc, addDoc, deleteField, serverTimestamp, FieldPath, connectFirestoreEmulator, writeBatch }
+  getDoc, setDoc, updateDoc, deleteDoc, addDoc, deleteField, serverTimestamp, FieldPath, connectFirestoreEmulator, writeBatch,
+  query, where, documentId, getDocs }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { PRESETS, LEVELS, presetById, checkRecipe, itemActive } from './diet.js';
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
 import { metricRecipe } from './units.js';
 import { makeIndex, computeRecipe, searchFoods, matchFood, parseLine } from './nutrition.js';
+import { MEALS, MEAL_LABEL, iso, fromIso, addDays, weekStart, weekDays, dayShort, dayLong, shoppingList, matchShop, guessCategory, DEFAULT_PANTRY, isPantry } from './planner.js';
 
 /* ---------- helpers (same as Shop) ---------- */
 const $ = s => document.querySelector(s);
@@ -42,6 +44,7 @@ const starText = n => n ? '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.ro
 /* ---------- state ---------- */
 const S = {
   user: null, access: null, hid: '', recipes: [], people: [], members: {}, photos: {}, importList: null,
+  week: weekStart(new Date()), days: {}, familyMeals: [], household: {}, unsubWeek: null,
   tab: LS.get('tab') || 'recipes', liveSheet: null, editPerson: null,
 };
 const me = () => ({ uid: S.user.uid, name: (S.user.displayName || S.user.email || '?').split(/[ @]/)[0] });
@@ -126,6 +129,10 @@ async function start(){
   unsubs.push(onSnapshot(collection(db, 'rxRecipes'), s => { S.recipes = s.docs.map(d => ({ id: d.id, ...d.data() })); convertOld(); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxPeople'), s => { S.people = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name)); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxMembers'), s => { S.members = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); }, denied));
+  unsubs.push(onSnapshot(collection(db, 'rxFamilyMeals'), s => { S.familyMeals = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.date.localeCompare(b.date)); render(); if (S.view === 'fm') viewFamilyMeal(S.fmId); }, denied));
+  unsubs.push(onSnapshot(doc(db, 'rxHouseholds', S.hid), s => { S.household = s.data() || {}; }, () => {}));
+  watchWeek();
+  unsubs.push(() => S.unsubWeek?.());
   // keep my account record up to date
   setDoc(doc(db, 'rxMembers', S.user.uid), { name: me().name, email: S.user.email, household: S.hid, seen: serverTimestamp() }, { merge: true }).catch(denied);
   render();
@@ -149,6 +156,7 @@ function render(){
   $('#vRecipes').hidden = S.tab !== 'recipes'; $('#vPlan').hidden = S.tab !== 'plan'; $('#vFamily').hidden = S.tab !== 'family';
   if (S.tab === 'recipes') renderRecipes();
   if (S.tab === 'family') renderFamily();
+  if (S.tab === 'plan') renderPlan();
   if (S.liveSheet) S.liveSheet();
 }
 
@@ -337,7 +345,7 @@ function viewRecipe(id){
     ${nutritionSection(r)}
     ${nut ? `<details class="sub-d"><summary>What the website said</summary><p class="note">Copied from the website by Paprika. Not checked and sometimes wrong.</p>
       <div class="nut">${NUT.filter(([k]) => nut[k] != null).map(([k, l, u]) => `<div><b>${esc(nut[k])}${u}</b><span>${l}</span></div>`).join('')}</div></details>` : ''}
-    <div class="btns"><button class="btn" data-a="editRecipe" data-id="${r.id}">Edit</button>
+    <div class="btns"><button class="btn tag" data-a="planRecipe" data-id="${r.id}">Add to plan</button><button class="btn" data-a="editRecipe" data-id="${r.id}">Edit</button>
       ${canDelete ? `<button class="btn danger" data-a="delRecipe" data-id="${r.id}">Delete</button>` : ''}
       <button class="btn pri" data-a="closeSheet">Done</button></div>`);
 }
@@ -441,6 +449,257 @@ async function saveFix(val){
   if (val === null) delete map[S.fix.text]; else map[S.fix.text] = val;
   try { await updateDoc(doc(db, 'rxRecipes', r.id), { nutritionFix: map, nutritionChecked: deleteField() }); S.nutOpen = r.id; viewRecipe(r.id); }
   catch (e){ console.error(e); toast("Couldn't save that"); }
+}
+
+/* ---------- meal planner ---------- */
+const daysRef = () => collection(db, 'rxPlans', S.hid, 'days');
+const uid8 = () => Math.random().toString(36).slice(2, 10);
+const recipeById = id => S.recipes.find(r => r.id === id);
+function watchWeek(){
+  S.unsubWeek?.();
+  const from = iso(S.week), to = iso(addDays(S.week, 6));
+  S.unsubWeek = onSnapshot(query(daysRef(), where(documentId(), '>=', from), where(documentId(), '<=', to)), s => {
+    S.days = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); render();
+  }, denied);
+}
+const myFamilyMeals = () => S.familyMeals.filter(m => m.host === S.hid || (m.invited || []).includes(S.hid));
+function renderPlan(){
+  const days = weekDays(S.week), today = iso(new Date());
+  const range = `${days[0].toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })} – ${days[6].toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}`;
+  const fms = myFamilyMeals();
+  const upcoming = fms.filter(m => m.date >= today && (m.date < iso(S.week) || m.date > iso(days[6]))).slice(0, 3);
+  $('#planBody').innerHTML = `
+    <div class="weeknav"><button class="btn sm" data-a="weekPrev" aria-label="Previous week">‹</button>
+      <b>${esc(range)}</b><button class="btn sm" data-a="weekNext" aria-label="Next week">›</button>
+      ${iso(S.week) !== iso(weekStart(new Date())) ? '<button class="btn sm" data-a="weekNow">This week</button>' : ''}</div>
+    <div class="toolrow"><button class="btn sm tag" data-a="shopList">Shopping list</button><button class="btn sm" data-a="newFamilyMeal">+ Family meal</button></div>
+    ${upcoming.length ? `<p class="sec" style="padding-top:12px">Coming up</p>${upcoming.map(fmCard).join('')}` : ''}
+    ${days.map(d => {
+      const k = iso(d), day = S.days[k]?.meals || {}, fm = fms.filter(m => m.date === k);
+      const items = MEALS.flatMap(meal => (day[meal] || []).map(e => ({ ...e, meal })));
+      return `<div class="day ${k === today ? 'today' : ''} ${k < today ? 'past' : ''}"><div class="dayhead"><b>${esc(dayShort(d))}</b> <span>${d.getDate()}</span>
+          <button class="btn sm" data-a="planAdd" data-d="${k}">+ Add</button></div>
+        ${fm.map(fmCard).join('')}
+        ${items.length ? `<ul class="plan">${items.map(e => {
+          const r = e.recipeId && recipeById(e.recipeId);
+          return `<li><span class="meal">${esc(MEAL_LABEL[e.meal])}</span><span class="grow" ${r ? `data-a="viewRecipe" data-id="${r.id}"` : ''}>${esc(r?.title || e.title || e.text || '?')}
+            <small>${e.servings ? `${e.servings} serves` : ''}${e.leftover ? ' · leftovers' : ''}${e.note ? ' · ' + esc(e.note) : ''}</small></span>
+            <button class="x" data-a="planDel" data-d="${k}" data-meal="${e.meal}" data-e="${e.id}" aria-label="Remove">✕</button></li>`; }).join('')}</ul>`
+          : fm.length ? '' : '<p class="note">Nothing planned.</p>'}</div>`;
+    }).join('')}`;
+}
+function fmCard(m){
+  const coming = Object.values(m.rsvp || {}).reduce((a, b) => a + (+b || 0), 0), mine = (m.dishes || []).filter(x => x.hid === S.hid);
+  return `<div class="fm" data-a="viewFm" data-id="${m.id}"><b>${esc(m.title || 'Family ' + (m.meal || 'dinner'))}</b>
+    <small>${esc(dayLong(fromIso(m.date)))} · ${esc(MEAL_LABEL[m.meal] || '')} · hosted by ${esc(hhName(m.host))}${coming ? ` · ${coming} coming` : ''}</small>
+    <small>${(m.dishes || []).length ? `${m.dishes.length} dish${m.dishes.length > 1 ? 'es' : ''}${mine.length ? `, you're bringing ${mine.map(d => esc(d.title)).join(', ')}` : ''}` : 'No dishes yet. Plan ahead!'}</small></div>`;
+}
+
+// add a recipe to the plan (from a day, or from a recipe)
+function openPlanAdd({ date, recipeId } = {}){
+  S.liveSheet = null; S.view = '';
+  S.pa = { date: date || iso(new Date()), recipeId: recipeId || '', meal: 'dinner' };
+  const r = recipeId && recipeById(recipeId);
+  openSheet(`<h2>Add to the plan</h2>
+    <div class="grid2"><label>Day<input id="pa_date" type="date" value="${S.pa.date}"></label>
+      <label>Meal<select id="pa_meal">${MEALS.map(m => `<option value="${m}" ${m === 'dinner' ? 'selected' : ''}>${MEAL_LABEL[m]}</option>`).join('')}</select></label></div>
+    ${r ? `<p><b>${esc(r.title)}</b></p>` : `<label>Recipe<input id="pa_q" placeholder="Search family recipes" autocomplete="off"></label><div id="pa_list" class="pick"></div>
+      <label>…or just write something<input id="pa_text" placeholder="e.g. Fish and chips, Out for dinner"></label>`}
+    <div class="grid2"><label>Serves<input id="pa_serves" type="number" min="1" inputmode="numeric" value="${esc(r?.servings || S.household.serves || 4)}"></label>
+      <label class="cb" style="margin-top:34px"><input type="checkbox" id="pa_left"> Leftovers (nothing to buy)</label></div>
+    <label>Note<input id="pa_note" placeholder="optional"></label>
+    <div class="btns"><button class="btn pri" data-a="paSave">Add</button><button class="btn" data-a="closeSheet">Cancel</button></div>`);
+  if (!r) drawPaList();
+}
+function drawPaList(){
+  const q = ($('#pa_q')?.value || '').trim().toLowerCase();
+  const list = S.recipes.filter(r => !q || r.title.toLowerCase().includes(q) || (r.cats || []).some(c => c.toLowerCase().includes(q))).sort(byTitle).slice(0, 30);
+  $('#pa_list').innerHTML = list.map(r => `<label class="cb"><input type="radio" name="pa_r" value="${r.id}" ${r.id === S.pa.recipeId ? 'checked' : ''}> <span>${esc(r.title)}<small>${(r.cats || []).join(' · ')}</small></span></label>`).join('') || '<p class="note">No recipes match.</p>';
+}
+async function savePlanAdd(){
+  const date = $('#pa_date').value, meal = $('#pa_meal').value;
+  const recipeId = S.pa.recipeId || document.querySelector('input[name=pa_r]:checked')?.value || '';
+  const text = $('#pa_text')?.value.trim() || '';
+  if (!date){ toast('Pick a day'); return; }
+  if (!recipeId && !text){ toast('Pick a recipe or write something'); return; }
+  const entry = { id: uid8(), servings: +$('#pa_serves').value || null, leftover: $('#pa_left').checked, note: $('#pa_note').value.trim(), by: me().name };
+  if (recipeId){ entry.recipeId = recipeId; entry.title = recipeById(recipeId)?.title || ''; } else entry.text = text;
+  try {
+    const ref = doc(daysRef(), date), cur = (await getDoc(ref)).data()?.meals || {};
+    await setDoc(ref, { meals: { ...cur, [meal]: [...(cur[meal] || []), entry] } }, { merge: true });
+    closeSheet(); toast(`Added to ${dayLong(fromIso(date))}`);
+    const w = weekStart(fromIso(date)); if (iso(w) !== iso(S.week)){ S.week = w; watchWeek(); }
+  } catch (e){ console.error(e); toast("Couldn't add that"); }
+}
+async function removePlanEntry(date, meal, id){
+  const ref = doc(daysRef(), date), cur = (await getDoc(ref)).data()?.meals || {};
+  await setDoc(ref, { meals: { ...cur, [meal]: (cur[meal] || []).filter(e => e.id !== id) } }, { merge: true });
+}
+
+/* ---------- family meals ---------- */
+function openFamilyMealForm(id){
+  S.liveSheet = null; S.view = '';
+  const m = id ? S.familyMeals.find(x => x.id === id) : { date: iso(addDays(new Date(), 7 - ((new Date().getDay() + 6) % 7) - 1)), meal: 'dinner', title: '', host: S.hid, invited: Object.keys(households()), notes: '' };
+  if (!m) return closeSheet();
+  openSheet(`<h2>${id ? 'Edit family meal' : 'Plan a family meal'}</h2>
+    <label>What is it<input id="fm_title" value="${esc(m.title)}" placeholder="e.g. Sunday roast at Mum and Dad's"></label>
+    <div class="grid2"><label>Day<input id="fm_date" type="date" value="${esc(m.date)}"></label>
+      <label>Meal<select id="fm_meal">${MEALS.map(x => `<option value="${x}" ${x === m.meal ? 'selected' : ''}>${MEAL_LABEL[x]}</option>`).join('')}</select></label></div>
+    <label>Hosted by<select id="fm_host">${Object.keys(households()).sort().map(h => `<option value="${h}" ${h === m.host ? 'selected' : ''}>${esc(hhName(h))}</option>`).join('')}</select></label>
+    <h3>Invite</h3>${Object.keys(households()).sort().map(h => `<label class="cb"><input type="checkbox" data-inv="${h}" ${(m.invited || []).includes(h) ? 'checked' : ''}> ${esc(hhName(h))}</label>`).join('')}
+    <label>Notes<textarea id="fm_notes" rows="3" placeholder="Time, what to bring, anything else">${esc(m.notes || '')}</textarea></label>
+    <div class="btns"><button class="btn pri" data-a="fmSave" data-id="${id || ''}">${id ? 'Save' : 'Create and invite'}</button>
+      ${id && (m.host === S.hid || isAdmin()) ? `<button class="btn danger" data-a="fmDelete" data-id="${id}">Cancel this meal</button>` : ''}
+      <button class="btn" data-a="closeSheet">Back</button></div>`);
+}
+async function saveFamilyMeal(id){
+  const data = { title: $('#fm_title').value.trim(), date: $('#fm_date').value, meal: $('#fm_meal').value, host: $('#fm_host').value,
+    invited: [...document.querySelectorAll('[data-inv]:checked')].map(x => x.dataset.inv), notes: $('#fm_notes').value.trim() };
+  if (!data.date){ toast('Pick a day'); return; }
+  if (!data.invited.includes(data.host)) data.invited.push(data.host);
+  try {
+    if (id) await updateDoc(doc(db, 'rxFamilyMeals', id), data);
+    else { const ref = await addDoc(collection(db, 'rxFamilyMeals'), { ...data, rsvp: {}, dishes: [], createdBy: me(), created: serverTimestamp() }); id = ref.id; }
+    viewFamilyMeal(id);
+  } catch (e){ console.error(e); toast("Couldn't save the family meal"); }
+}
+function viewFamilyMeal(id){
+  const m = S.familyMeals.find(x => x.id === id); if (!m){ closeSheet(); return; }
+  S.view = 'fm'; S.fmId = id; S.liveSheet = null;
+  const inv = [...new Set([m.host, ...(m.invited || [])])];
+  const coming = inv.filter(h => (+m.rsvp?.[h] || 0) > 0);
+  const people = S.people.filter(p => coming.includes(p.household));
+  const needs = people.map(p => ({ p, n: needsSummary(p, p.showConditions !== false) })).filter(x => x.n.length);
+  const total = coming.reduce((a, h) => a + (+m.rsvp[h] || 0), 0);
+  openSheet(`<h2>${esc(m.title || 'Family ' + m.meal)}</h2>
+    <p class="note">${esc(dayLong(fromIso(m.date)))} · ${esc(MEAL_LABEL[m.meal])} · hosted by ${esc(hhName(m.host))}</p>
+    ${m.notes ? `<p style="white-space:pre-line">${esc(m.notes)}</p>` : ''}
+    <h3>Who's coming${total ? ` · ${total} people` : ''}</h3>
+    ${inv.map(h => `<div class="mini"><span class="grow">${esc(hhName(h))}${h === S.hid ? ' <span class="pill plain">you</span>' : ''}</span>
+      ${h === S.hid ? `<input type="number" min="0" inputmode="numeric" value="${esc(m.rsvp?.[h] ?? '')}" placeholder="how many" data-a-change="fmRsvp" data-id="${m.id}" style="max-width:110px" aria-label="How many from your household">`
+        : `<span class="note">${m.rsvp?.[h] == null ? 'not answered' : +m.rsvp[h] ? `${m.rsvp[h]} coming` : 'not coming'}</span>`}</div>`).join('')}
+    <h3>Dishes</h3>
+    ${(m.dishes || []).length ? (m.dishes || []).map(d => {
+      const r = recipeById(d.recipeId), flags = r ? checkRecipe(r.ingredients, people) : [];
+      return `<div class="mini"><span class="grow"><b ${r ? `data-a="viewRecipe" data-id="${r.id}" style="cursor:pointer"` : ''}>${esc(d.title)}</b> <span class="note">from ${esc(hhName(d.hid))}${d.servings ? ` · serves ${d.servings}` : ''}</span>
+        ${flags.length ? `<br><small class="warntext">${flags.slice(0, 4).map(f => `${esc(f.person)}: ${esc(f.label)}`).join(' · ')}${flags.length > 4 ? ' …' : ''}</small>` : ''}</span>
+        ${d.hid === S.hid ? `<button class="btn sm danger" data-a="fmDishDel" data-id="${m.id}" data-d="${d.id}" aria-label="Remove">✕</button>` : ''}</div>`; }).join('')
+      : '<p class="note">Nothing yet. Say what your household will bring, so the meal comes together.</p>'}
+    <div class="btns" style="margin-top:6px"><button class="btn sm tag" data-a="fmDish" data-id="${m.id}">+ We'll bring a dish</button></div>
+    <h3>Dietary needs of the people coming</h3>
+    ${!coming.length ? '<p class="note">Shown once households say how many are coming.</p>' : needs.length ? needs.map(x => `<div class="mini"><span class="grow"><b>${esc(x.p.name)}</b> <span class="note">${esc(hhName(x.p.household))}</span><br><small>${x.n.map(esc).join(' · ')}</small></span></div>`).join('')
+      : '<p class="note">No dietary needs recorded for the people coming.</p>'}
+    <div class="btns"><button class="btn" data-a="fmEdit" data-id="${m.id}">Edit</button><button class="btn pri" data-a="closeSheet">Done</button></div>`);
+}
+function openDishPick(fmId){
+  S.view = ''; S.liveSheet = null; S.pa = { fmId, recipeId: '' };
+  openSheet(`<h2>What will you bring?</h2>
+    <label>Recipe<input id="pa_q" placeholder="Search family recipes" autocomplete="off"></label><div id="pa_list" class="pick"></div>
+    <label>…or just write it<input id="pa_text" placeholder="e.g. Pavlova, Drinks, Bread rolls"></label>
+    <label>Enough for how many<input id="pa_serves" type="number" min="1" inputmode="numeric" value="8"></label>
+    <div class="btns"><button class="btn pri" data-a="fmDishSave">Add</button><button class="btn" data-a="viewFm" data-id="${fmId}">Back</button></div>`);
+  drawPaList();
+}
+async function saveDish(){
+  const m = S.familyMeals.find(x => x.id === S.pa.fmId); if (!m) return;
+  const rid = document.querySelector('input[name=pa_r]:checked')?.value || '', text = $('#pa_text').value.trim();
+  if (!rid && !text){ toast('Pick a recipe or write something'); return; }
+  const dish = { id: uid8(), hid: S.hid, servings: +$('#pa_serves').value || null, by: me().name, ...(rid ? { recipeId: rid, title: recipeById(rid)?.title || '' } : { title: text }) };
+  try { await updateDoc(doc(db, 'rxFamilyMeals', m.id), { dishes: [...(m.dishes || []), dish] }); viewFamilyMeal(m.id); }
+  catch (e){ console.error(e); toast("Couldn't add the dish"); }
+}
+
+/* ---------- shopping list & Send to Shop ---------- */
+const pantryList = () => S.household.pantry || DEFAULT_PANTRY;
+function openShopDays(){
+  S.view = ''; S.liveSheet = null;
+  const days = weekDays(S.week), today = iso(new Date());
+  openSheet(`<h2>Shopping list</h2><p class="note">Which days are you shopping for? Leftovers are skipped. Dishes you're bringing to family meals are included.</p>
+    ${days.map(d => { const k = iso(d), n = MEALS.reduce((a, m) => a + (S.days[k]?.meals?.[m] || []).filter(e => e.recipeId && !e.leftover).length, 0)
+      + myFamilyMeals().filter(m => m.date === k).reduce((a, m) => a + (m.dishes || []).filter(x => x.hid === S.hid && x.recipeId).length, 0);
+      return `<label class="cb"><input type="checkbox" data-day="${k}" ${k >= today && n ? 'checked' : ''} ${n ? '' : 'disabled'}> <span>${esc(dayLong(d))}<small>${n ? `${n} recipe${n > 1 ? 's' : ''}` : 'nothing to buy'}</small></span></label>`; }).join('')}
+    <div class="btns"><button class="btn pri" data-a="shopBuild">Make the list</button><button class="btn" data-a="closeSheet">Cancel</button></div>`);
+}
+async function buildShopList(){
+  const chosen = [...document.querySelectorAll('[data-day]:checked')].map(x => x.dataset.day);
+  if (!chosen.length){ toast('Tick at least one day'); return; }
+  const entries = [];
+  for (const k of chosen){
+    const d = fromIso(k);
+    for (const m of MEALS) for (const e of S.days[k]?.meals?.[m] || [])
+      if (e.recipeId && !e.leftover) entries.push({ recipe: recipeById(e.recipeId), servings: e.servings, label: `${recipeById(e.recipeId)?.title || e.title} (${dayShort(d)})` });
+    for (const fm of myFamilyMeals().filter(x => x.date === k)) for (const dish of (fm.dishes || []).filter(x => x.hid === S.hid && x.recipeId))
+      entries.push({ recipe: recipeById(dish.recipeId), servings: dish.servings, label: `${dish.title} for ${fm.title || 'family meal'} (${dayShort(d)})` });
+  }
+  const list = shoppingList(entries, { pantry: pantryList() });
+  let shopItems = [], cats = null;
+  if (isAdmin()){
+    try {
+      const [items, settings] = await Promise.all([getDocs(collection(db, 'items')), getDoc(doc(db, 'meta', 'settings'))]);
+      shopItems = items.docs.map(d => ({ id: d.id, ...d.data() })); cats = settings.data()?.cats || null;
+    } catch (e){ console.error(e); toast("Couldn't read the Shop list. You can still copy it."); }
+  }
+  S.shop = { items: shopItems, cats, rows: list.map(x => {
+    const m = shopItems.length ? matchShop(x.name, shopItems) : null;
+    return { ...x, on: !x.pantry, matchId: m?.item.id || '', cat: guessCategory(x.name, cats) };
+  }) };
+  drawShopList();
+}
+function drawShopList(){
+  const { rows, items, cats } = S.shop, canSend = isAdmin() && items.length;
+  const byId = id => items.find(i => i.id === id);
+  const row = (x, n) => {
+    const it = x.matchId && byId(x.matchId);
+    return `<div class="srow ${x.on ? '' : 'off'}"><input type="checkbox" data-a="srOn" data-n="${n}" ${x.on ? 'checked' : ''} aria-label="Include ${esc(x.name)}">
+      <div class="grow"><input class="sname" value="${esc(x.name)}" data-a-change="srName" data-n="${n}" aria-label="Item name">
+        <small>${esc(x.amountText || 'amount not given')} · ${esc(x.from.join(', '))}</small>
+        ${canSend ? `<small>${it ? `→ Shop: <b>${esc(it.name)}</b>${it.onList ? (it.ticked ? ' (ticked, will untick)' : ' (already on the list, adds a note)') : ''} <button class="link" data-a="srNew" data-n="${n}">make it a new item</button>`
+          : `→ new Shop item in <select data-a-change="srCat" data-n="${n}" aria-label="Shop category">${(cats || [x.cat]).map(c => `<option ${c === x.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>`}</small>` : ''}</div></div>`;
+  };
+  const main = rows.map((x, n) => ({ x, n })).filter(r => !r.x.pantry), pantry = rows.map((x, n) => ({ x, n })).filter(r => r.x.pantry);
+  const count = rows.filter(x => x.on).length;
+  openSheet(`<h2>Shopping list</h2>
+    <p class="note">${count} item${count === 1 ? '' : 's'} ticked. Untick anything you already have. Amounts are added up across recipes and scaled to the servings you planned.</p>
+    ${main.map(r => row(r.x, r.n)).join('') || '<p class="note">Nothing to buy.</p>'}
+    ${pantry.length ? `<h3>Usually in the cupboard</h3>${pantry.map(r => row(r.x, r.n)).join('')}` : ''}
+    <div class="btns"><button class="btn sm" data-a="pantryEdit">Edit cupboard staples</button></div>
+    <div class="btns">${canSend ? `<button class="btn pri" data-a="shopSend">Send ${count} to Shop</button>` : ''}
+      <button class="btn ${canSend ? '' : 'pri'}" data-a="shopCopy">Copy list</button>${navigator.share ? '<button class="btn" data-a="shopShare">Share</button>' : ''}
+      <button class="btn" data-a="closeSheet">Close</button></div>
+    ${isAdmin() ? '' : '<p class="note">Sending straight to Shop is only set up for one household so far. Copy or share the list instead.</p>'}`);
+}
+const listText = () => S.shop.rows.filter(x => x.on).map(x => `• ${x.name}${x.amountText ? ` (${x.amountText})` : ''}`).join('\n');
+async function sendToShop(){
+  const picked = S.shop.rows.filter(x => x.on); if (!picked.length) return;
+  const b = writeBatch(db), who = me();
+  let added = 0, noted = 0;
+  // rows that go to the same Shop item ("Onion" and "Red onion" → Onion) become one write with both notes
+  const groups = new Map();
+  for (const x of picked){ const k = x.matchId || 'new:' + x.name.toLowerCase(); const g = groups.get(k); if (g) g.push(x); else groups.set(k, [x]); }
+  for (const g of groups.values()){
+    const x = g[0];
+    const note = g.map(y => `${y.amountText ? (g.length > 1 ? y.name + ' ' : '') + y.amountText + ' · ' : ''}for ${y.from.join(', ')}`).join('; ').slice(0, 300);
+    const it = x.matchId && S.shop.items.find(i => i.id === x.matchId);
+    if (it){
+      if (it.onList){
+        const upd = { note: it.note ? `${it.note}; ${note}` : note };
+        if (it.ticked){ upd.ticked = false; upd.tickedBy = deleteField(); }
+        b.update(doc(db, 'items', it.id), upd); noted++;
+      } else {
+        b.update(doc(db, 'items', it.id), { onList: true, ticked: false, urgent: false, addedBy: who, tickedBy: deleteField(), note }); added++;
+      }
+    } else {
+      b.set(doc(collection(db, 'items')), { name: x.name, cat: x.cat || 'Other', misc: false, onList: true, ticked: false, urgent: false, addedBy: who,
+        qty: '', note, count: 0, pos: {}, created: serverTimestamp() }); added++;
+    }
+  }
+  try { await b.commit(); closeSheet(); toast(`Sent to Shop: ${added} added${noted ? `, ${noted} already on the list (note added)` : ''}`); }
+  catch (e){ console.error(e); toast("Couldn't send to Shop"); }
+}
+function openPantry(){
+  openSheet(`<h2>Cupboard staples</h2><p class="note">Things your household usually has, one per line. They're unticked on shopping lists, so they only go to Shop if you tick them.</p>
+    <label>Staples<textarea id="pantryTxt" rows="10">${esc(pantryList().join('\n'))}</textarea></label>
+    <div class="btns"><button class="btn pri" data-a="pantrySave">Save</button><button class="btn" data-a="pantryBack">Back</button></div>`);
 }
 
 /* ---------- import from Paprika ---------- */
@@ -549,6 +808,38 @@ const A = {
     if (!r || !confirm(`Delete “${r.title}” for the whole family? This can't be undone.`)) return;
     try { await deleteDoc(doc(db, 'rxRecipes', r.id)); if (r.hasPhoto) deleteDoc(doc(db, 'rxPhotos', r.id)).catch(() => {}); closeSheet(); toast('Deleted'); } catch (e){ toast("Couldn't delete"); } },
   rate: async t => { try { await updateDoc(doc(db, 'rxRecipes', t.dataset.id), new FieldPath('stars', S.user.uid), +t.dataset.n || deleteField()); } catch (e){ toast("Couldn't save your rating"); } },
+  weekPrev: () => { S.week = addDays(S.week, -7); watchWeek(); render(); },
+  weekNext: () => { S.week = addDays(S.week, 7); watchWeek(); render(); },
+  weekNow: () => { S.week = weekStart(new Date()); watchWeek(); render(); },
+  planAdd: t => openPlanAdd({ date: t.dataset.d }),
+  planRecipe: t => openPlanAdd({ recipeId: t.dataset.id }),
+  paSave: savePlanAdd,
+  planDel: async t => { try { await removePlanEntry(t.dataset.d, t.dataset.meal, t.dataset.e); } catch (e){ toast("Couldn't remove"); } },
+  newFamilyMeal: () => openFamilyMealForm(null),
+  viewFm: t => viewFamilyMeal(t.dataset.id),
+  fmEdit: t => openFamilyMealForm(t.dataset.id),
+  fmSave: t => saveFamilyMeal(t.dataset.id || null),
+  fmDelete: async t => { if (!confirm('Cancel this family meal for everyone?')) return;
+    try { await deleteDoc(doc(db, 'rxFamilyMeals', t.dataset.id)); closeSheet(); toast('Family meal cancelled'); } catch (e){ toast("Couldn't cancel it"); } },
+  fmDish: t => openDishPick(t.dataset.id),
+  fmDishSave: saveDish,
+  fmDishDel: async t => { const m = S.familyMeals.find(x => x.id === t.dataset.id);
+    try { await updateDoc(doc(db, 'rxFamilyMeals', m.id), { dishes: (m.dishes || []).filter(d => d.id !== t.dataset.d) }); } catch (e){ toast("Couldn't remove"); } },
+  shopList: openShopDays,
+  shopBuild: buildShopList,
+  srOn: t => { S.shop.rows[+t.dataset.n].on = t.checked; t.closest('.srow').classList.toggle('off', !t.checked);
+    const c = S.shop.rows.filter(x => x.on).length, b = document.querySelector('[data-a=shopSend]'); if (b) b.textContent = `Send ${c} to Shop`; },
+  srNew: t => { S.shop.rows[+t.dataset.n].matchId = ''; drawShopList(); },
+  shopSend: sendToShop,
+  shopCopy: async () => { try { await navigator.clipboard.writeText(listText()); toast('List copied'); } catch (e){ toast("Couldn't copy"); } },
+  shopShare: () => navigator.share({ title: 'Shopping list', text: listText() }).catch(() => {}),
+  pantryEdit: openPantry,
+  pantryBack: drawShopList,
+  pantrySave: async () => {
+    const list = $('#pantryTxt').value.split('\n').map(x => x.trim()).filter(Boolean);
+    try { await setDoc(doc(db, 'rxHouseholds', S.hid), { pantry: list }, { merge: true }); S.household.pantry = list;
+      S.shop.rows.forEach(x => { const p = isPantry(x.name, list); if (p !== x.pantry){ x.pantry = p; x.on = !p; } }); drawShopList(); toast('Staples saved'); }
+    catch (e){ console.error(e); toast("Couldn't save"); } },
   nutView: t => { S.nutView = t.dataset.v; S.liveSheet?.(); },
   nutFix: t => openNutFix(t.dataset.id, +t.dataset.i),
   nutServes: async t => { const n = +$('#nutServes').value; if (!(n > 0)) return;
@@ -594,6 +885,11 @@ const CH = {
   renameHh: t => { const n = t.value.trim(); if (n) adminWrite(() => updateDoc(accessRef(), new FieldPath('households', t.dataset.h), n), 'Renamed'); },
   memberHh: t => adminWrite(() => updateDoc(accessRef(), new FieldPath('members', t.dataset.e), t.value), 'Moved'),
   pLevel: t => { readPersonForm(); S.editPerson.custom[+t.dataset.n].level = t.value; },
+  fmRsvp: async t => { const v = t.value === '' ? deleteField() : Math.max(0, +t.value || 0);
+    try { await updateDoc(doc(db, 'rxFamilyMeals', t.dataset.id), new FieldPath('rsvp', S.hid), v); } catch (e){ toast("Couldn't save"); } },
+  srName: t => { const x = S.shop.rows[+t.dataset.n]; x.name = t.value.trim() || x.name;
+    const m = S.shop.items.length ? matchShop(x.name, S.shop.items) : null; x.matchId = m?.item.id || ''; x.cat = guessCategory(x.name, S.shop.cats); drawShopList(); },
+  srCat: t => { S.shop.rows[+t.dataset.n].cat = t.value; },
 };
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-a]'); if (!t) return;
@@ -609,6 +905,7 @@ document.addEventListener('change', e => {
 $('#rq').addEventListener('input', renderRecipes);
 document.addEventListener('input', e => {
   if (e.target.id === 'nfQ'){ clearTimeout(S.nfT); S.nfT = setTimeout(drawFixResults, 200); }
+  if (e.target.id === 'pa_q') drawPaList();
 });
 document.addEventListener('change', e => { if (e.target.name === 'nfFood') S.fix.foodId = e.target.value; });
 document.addEventListener('toggle', e => { if (e.target.dataset?.nut) S.nutOpen = e.target.open ? e.target.dataset.nut : null; }, true);
