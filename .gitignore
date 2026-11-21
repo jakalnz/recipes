@@ -1,0 +1,5 @@
+node_modules/
+# local backup of the rules deployed before Recipes (contains email addresses)
+firestore.rules.deployed
+*-debug.log
+.firebase/

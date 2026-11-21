@@ -1,0 +1,17 @@
+﻿{
+  "name": "recipes",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "serve": "node test/serve.js",
+    "emu": "firebase emulators:start --only firestore,auth --project demo-recipes",
+    "seed": "node test/seed-emulator.js",
+    "test:rules":"firebase emulators:exec --only firestore \"node --test test/rules/rules.test.js\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.0.0"
+  }
+}
+

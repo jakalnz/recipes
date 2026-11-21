@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "recipes", "runtimeExecutable": "node", "runtimeArgs": ["test/serve.js"], "port": 5173 }
+  ]
+}

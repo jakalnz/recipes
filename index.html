@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Recipes</title>
+<meta name="theme-color" content="#14213d">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Same family look as Shop, with a tomato accent instead of Shop's yellow. */
+:root{
+  --ink:#14213d; --paper:#f6f4f1; --row:#ffffff; --tag:#ff7a45; --tag-ink:#2b1204;
+  --ok:#1f9d63; --mute:#68738a; --line:#e3ded8; --danger:#c8372d; --warn:#b26a00;
+  --disp:'Bricolage Grotesque','Arial Narrow',system-ui,sans-serif;
+  --body:'Figtree',system-ui,-apple-system,'Segoe UI',sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --ink:#e9edf5; --paper:#11151f; --row:#1a2030; --tag:#ff8a5c; --tag-ink:#2b1204; --ok:#3ccf8a; --mute:#8f9bb3; --line:#2a3246; --danger:#ff6b5e; --warn:#ffb648; }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.4 var(--body)}
+body{padding-bottom:env(safe-area-inset-bottom,0)}
+[hidden]{display:none!important}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0;padding:0}
+:focus-visible{outline:3px solid var(--tag);outline-offset:2px}
+h1,h2,h3{font-family:var(--disp);margin:0}
+
+header{position:sticky;top:0;z-index:5;background:var(--ink);color:#fff;padding:calc(env(safe-area-inset-top,0px) + 10px) 14px 0}
+@media (prefers-color-scheme:dark){header{background:#0a0d15;border-bottom:1px solid var(--line)}}
+.top{display:flex;align-items:center;gap:10px}
+.top h1{font-size:30px;font-weight:800;letter-spacing:-.02em;flex:1}
+.hh{background:var(--tag);color:var(--tag-ink);border-radius:4px;padding:5px 10px;font-weight:600;font-size:14px;max-width:46vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.iconbtn{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;color:#fff}
+.iconbtn:hover{background:rgba(255,255,255,.12)}
+.tabs{display:flex;gap:4px;margin-top:8px}
+.tabs button{flex:1;padding:10px 0 9px;font-weight:600;color:#aeb8cf;border-bottom:3px solid transparent}
+.tabs button.on{color:#fff;border-color:var(--tag)}
+
+main{max-width:680px;margin:0 auto;padding:0 0 110px}
+.search{padding:12px 14px 4px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.search input{grid-column:1/3;width:100%;border:2px solid var(--ink);background:var(--row);border-radius:6px;padding:12px 14px;font-size:17px}
+.search input:focus{outline:none;border-color:var(--tag);box-shadow:0 0 0 3px rgba(255,122,69,.35)}
+.search select{border:1.5px solid var(--ink);background:var(--row);border-radius:6px;padding:9px 8px}
+.toolrow{display:flex;gap:8px;flex-wrap:wrap;padding:8px 14px 0}
+.count{padding:10px 14px 0;color:var(--mute);font-size:13px}
+
+.rows{list-style:none;margin:8px 0 0;padding:0;background:var(--row);border-top:1px solid var(--line)}
+.row{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);min-height:60px;padding:8px 14px;cursor:pointer}
+.row .grow{flex:1;min-width:0}
+.nm{font-size:18px;font-weight:500;overflow-wrap:anywhere}
+.sub{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;align-items:center;font-size:13px;color:var(--mute)}
+.pill{font-size:12px;background:var(--tag);color:var(--tag-ink);border-radius:3px;padding:1px 6px;font-weight:600;white-space:nowrap}
+.pill.plain{background:transparent;color:var(--mute);border:1px solid var(--line)}
+.pill.warn{background:transparent;color:var(--warn);border:1px solid var(--warn)}
+.pill.bad{background:var(--danger);color:#fff}
+.empty{padding:36px 24px;text-align:center;color:var(--mute)}
+.sec{font-size:17px;padding:22px 14px 0;color:var(--mute)}
+
+.btn{border:2px solid var(--ink);border-radius:6px;padding:10px 14px;font-weight:600;background:var(--row)}
+.btn.pri{background:var(--ink);color:var(--paper)}
+.btn.tag{background:var(--tag);color:var(--tag-ink);border-color:var(--tag)}
+.btn.danger{color:var(--danger);border-color:var(--danger)}
+.btn.sm{padding:6px 10px;font-size:14px}
+.btn:disabled{opacity:.45;cursor:default}
+
+#sheet{position:fixed;inset:0;z-index:20;display:none}
+#sheet.on{display:block}
+.scrim{position:absolute;inset:0;background:rgba(10,15,28,.55)}
+.panel{position:absolute;left:0;right:0;bottom:0;max-width:680px;margin:0 auto;background:var(--paper);border-radius:14px 14px 0 0;padding:18px 16px calc(env(safe-area-inset-bottom,0px) + 18px);max-height:88vh;overflow:auto;animation:up .18s ease-out}
+@keyframes up{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.panel{animation:none}}
+.panel h2{font-size:24px;margin-bottom:12px;overflow-wrap:anywhere}
+.panel h3{font-size:17px;margin:20px 0 6px}
+label{display:block;font-size:14px;font-weight:600;margin:10px 0 0}
+label input:not([type=checkbox]):not([type=radio]),label select,label textarea{display:block;width:100%;margin-top:4px;border:1.5px solid var(--ink);background:var(--row);border-radius:6px;padding:10px 12px;font-weight:400;font-size:16px}
+label.cb{display:flex;gap:10px;align-items:flex-start;font-weight:500}
+label.cb input{width:20px;height:20px;flex:none;margin-top:1px}
+label.cb small{display:block;color:var(--mute);font-weight:400}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.mini{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.mini input,.mini select{flex:1;border:1.5px solid var(--line);background:var(--row);border-radius:6px;padding:8px 10px;min-width:0}
+.mini select{flex:0 1 auto}
+.mini .grow{flex:1;min-width:0;overflow-wrap:anywhere}
+.note{color:var(--mute);font-size:14px;margin:6px 0}
+.card{background:var(--row);border:1.5px solid var(--line);border-radius:8px;padding:10px 12px;margin:10px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}
+@media (max-width:420px){.grid2{grid-template-columns:1fr}}
+
+#toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:6px;z-index:40;font-weight:500;max-width:90vw;display:none}
+#toast.on{display:block}
+
+.center{min-height:100vh;display:grid;place-items:center;padding:24px;text-align:center}
+.center .box{max-width:360px}
+.center h1{font-size:60px;font-weight:800;letter-spacing:-.03em;background:var(--tag);color:var(--tag-ink);display:inline-block;padding:0 14px;border-radius:4px;margin-bottom:16px}
+.center p{color:var(--mute)}
+</style>
+</head>
+<body>
+
+<div id="login" class="center" hidden>
+  <div class="box">
+    <h1>Recipes</h1>
+    <p id="loginMsg">Our family recipe book and meal planner.</p>
+    <p><button class="btn pri" id="signin" style="width:100%;padding:14px">Sign in with Google</button></p>
+    <p><button class="btn sm" id="signoutLogin" hidden>Use a different account</button></p>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <div class="top">
+      <h1>Recipes</h1>
+      <span class="hh" id="hhName"></span>
+      <button class="iconbtn" data-a="settings" aria-label="Settings">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </div>
+    <nav class="tabs">
+      <button data-a="tab" data-tab="recipes" class="on">Recipes</button>
+      <button data-a="tab" data-tab="plan">Plan</button>
+      <button data-a="tab" data-tab="family">Family</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="vRecipes">
+      <div class="search">
+        <input id="rq" type="search" placeholder="Search family recipes" autocomplete="off">
+        <select id="rcat" aria-label="Category"></select>
+        <select id="rsort" aria-label="Sort">
+          <option value="new">Newest</option>
+          <option value="az">A–Z</option>
+          <option value="rated">Best rated</option>
+        </select>
+      </div>
+      <div class="toolrow">
+        <button class="btn sm tag" data-a="addRecipe">+ Add recipe</button>
+      </div>
+      <div class="count" id="rcount"></div>
+      <div id="recipesBody"></div>
+    </section>
+
+    <section id="vPlan" hidden>
+      <p class="empty">Meal planning for your household is coming next.<br>You'll plan the week, share family meals and send ingredients to Shop.</p>
+    </section>
+
+    <section id="vFamily" hidden>
+      <div id="familyBody"></div>
+    </section>
+  </main>
+</div>
+
+<div id="sheet"></div>
+<div id="toast" role="status"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
