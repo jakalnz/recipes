@@ -113,17 +113,18 @@ async function gemini(a, ask, input){
   return parseLooseJson((j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join(''));
 }
 
-// shrink a photo before sending (keeps requests small and quick)
+// shrink a photo (a File, or a data URL already in the app) to a JPEG data URL
 export function resizeImage(file, max = 1600, q = 0.85){
   return new Promise((res, rej) => {
-    const img = new Image(), url = URL.createObjectURL(file);
+    const own = typeof file !== 'string', img = new Image(), url = own ? URL.createObjectURL(file) : file;
+    const done = () => { if (own) URL.revokeObjectURL(url); };
     img.onload = () => {
       const s = Math.min(1, max / Math.max(img.width, img.height)), c = document.createElement('canvas');
       c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
       c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', q));
+      done(); res(c.toDataURL('image/jpeg', q));
     };
-    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("Couldn't open that photo.")); };
+    img.onerror = () => { done(); rej(new Error("Couldn't open that photo.")); };
     img.src = url;
   });
 }

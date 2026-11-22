@@ -138,6 +138,25 @@ ul.plan .grow{flex:1;cursor:pointer}ul.plan small{display:block;color:var(--mute
 .sname{width:100%;border:1px solid transparent;background:transparent;font-weight:600;font-size:16px;padding:4px 2px;border-radius:4px}
 .sname:focus{border-color:var(--ink);background:var(--row)}
 .srow select{font-size:13px;padding:2px;border:1px solid var(--line);border-radius:4px;background:var(--row)}
+.seg{margin-left:auto;display:flex}.seg .btn{border-radius:0}.seg .btn:first-child{border-radius:6px 0 0 6px}.seg .btn:last-child{border-radius:0 6px 6px 0;border-left:0}
+.tiles{list-style:none;margin:10px 0 0;padding:0 14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.tile{position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--row);border:1px solid var(--line);cursor:pointer}
+.tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1}
+.tile img:not([src]){display:none}
+.tile .noimg{position:absolute;inset:0;display:grid;place-items:center;font:800 54px var(--disp);color:var(--line)}
+.tile .tt{position:absolute;left:0;right:0;bottom:0;z-index:2;padding:22px 8px 7px;color:#fff;background:linear-gradient(transparent,rgba(0,0,0,.78));font-size:14px;line-height:1.25;display:flex;flex-direction:column;gap:2px;align-items:flex-start}
+.tile .tt b{font-weight:600;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.tile .stars{font-size:12px}
+.strip{display:flex;gap:8px;overflow-x:auto;padding:4px 0 6px}
+.ph{flex:none;width:88px;height:88px;border-radius:8px;overflow:hidden;padding:0;border:2px solid var(--line);background:var(--row);position:relative}
+.ph img{width:100%;height:100%;object-fit:cover;display:block}.ph img:not([src]){visibility:hidden}
+.ph.cov{border-color:var(--tag)}
+.ph.add{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:13px;font-weight:600;color:var(--ink);border-style:dashed}
+.ph.add b{font-size:24px;line-height:1}
+.ph.page{width:76px;height:100px}
+.ph .x{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.6);color:#fff;border-radius:50%;width:24px;height:24px;padding:0;font-size:13px}
+.hero:not([src]){display:none}
+.big{display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:8px;background:#000;margin-bottom:10px;min-height:120px}
 .formpic{display:block;width:100%;max-height:30vh;object-fit:cover;border-radius:8px;margin:6px 0;background:var(--row)}
 label.imp{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
 
@@ -193,6 +212,7 @@ label.imp{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
       <div class="toolrow">
         <button class="btn sm tag" data-a="addRecipe">+ Add recipe</button>
         <button class="btn sm" data-a="importer">Import</button>
+        <span class="seg" role="group" aria-label="View"><button class="btn sm" data-a="rview" data-v="list">List</button><button class="btn sm" data-a="rview" data-v="grid">Photos</button></span>
       </div>
       <div class="count" id="rcount"></div>
       <div id="recipesBody"></div>

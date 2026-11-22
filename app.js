@@ -51,7 +51,8 @@ const S = {
   tab: LS.get('tab') || 'recipes', liveSheet: null, editPerson: null,
 };
 const me = () => ({ uid: S.user.uid, name: (S.user.displayName || S.user.email || '?').split(/[ @]/)[0] });
-const isAdmin = () => (S.access?.shop || []).includes(S.user?.email);
+const touch = () => matchMedia('(pointer: coarse)').matches;   // phones and tablets: offer the camera
+const isAdmin = () =>(S.access?.shop || []).includes(S.user?.email);
 const households = () => S.access?.households || {};
 const hhName = h => households()[h] || h;
 const myPeople = () => S.people.filter(p => p.household === S.hid);
@@ -182,10 +183,17 @@ function renderRecipes(){
   list.sort(sort === 'az' ? byTitle : sort === 'rated' ? (a, b) => avgStars(b) - avgStars(a) || byTitle(a, b)
     : (a, b) => (b.created?.seconds || 0) - (a.created?.seconds || 0));
   $('#rcount').textContent = S.recipes.length ? `${list.length} of ${S.recipes.length} recipes` : '';
-  const mine = myPeople();
+  const mine = myPeople(), grid = LS.get('rview') === 'grid';
+  document.querySelectorAll('[data-a=rview]').forEach(b => b.classList.toggle('pri', (b.dataset.v === 'grid') === grid));
   $('#recipesBody').innerHTML = !S.recipes.length
     ? `<p class="empty">No recipes yet.<br>Tap “+ Add recipe” to start the family book.</p>`
     : !list.length ? `<p class="empty">Nothing matches.</p>`
+    : grid ? `<ul class="tiles">${list.map(r => {
+        const t = tileSrc(r), avg = avgStars(r), flags = checkRecipe(r.ingredients, mine);
+        return `<li class="tile" data-a="viewRecipe" data-id="${r.id}">
+          ${t ? `<img data-thumb="${r.id}" alt="" ${t.src ? `src="${esc(t.src)}"` : ''} referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">` : ''}
+          <div class="noimg" aria-hidden="true">${esc((r.title || '?').trim()[0] || '?')}</div>
+          <div class="tt"><b>${esc(r.title)}</b>${avg ? `<span class="stars">${starText(avg)}</span>` : ''}${flags.length ? `<span class="pill ${flags[0].level === 'allergy' ? 'bad' : 'warn'}">${flags.length} flag${flags.length === 1 ? '' : 's'}</span>` : ''}</div></li>`; }).join('')}</ul>`
     : `<ul class="rows">${list.map(r => {
         const flags = checkRecipe(r.ingredients, mine);
         const worst = flags[0];
@@ -196,6 +204,90 @@ function renderRecipes(){
             ${(r.tags || []).map(c => `<span class="pill plain">#${esc(c)}</span>`).join('')}
             ${worst ? `<span class="pill ${worst.level === 'allergy' ? 'bad' : 'warn'}">${flags.length} flag${flags.length === 1 ? '' : 's'} for your household</span>` : ''}
             ${r.createdBy ? `<span>by ${esc(r.createdBy.name)}</span>` : ''}</div></div></li>`; }).join('')}</ul>`;
+  if (grid) observeThumbs();
+}
+
+/* ---------- photos ----------
+   rxPhotos/{recipeId}          the photo that came with the recipe (an import or Paprika)
+   rxPhotos/{recipeId}~m~{n}    family members' photos of the dish they made (listed in recipe.meals)
+   rxPhotos/{recipeId}~t        small copy of the cover photo for the photo view (recipe.thumbOf says which) */
+const gallery = r => [...(r.meals || []).map(m => ({ ...m, kind: 'meal' })), ...(r.hasPhoto ? [{ id: r.id, kind: 'import' }] : [])];
+function coverId(r){
+  const ids = gallery(r).map(p => p.id);
+  return ids.includes(r.cover) ? r.cover : ids[0] || '';   // chosen cover, else the newest meal photo, else the imported one
+}
+// a full photo: cached data URL, or '' while it loads (any <img data-pid> showing it is filled in when it arrives)
+function photoData(pid){
+  if (S.photos[pid] != null) return S.photos[pid];
+  if (!(pid in S.photos)){
+    S.photos[pid] = null;
+    getDoc(doc(db, 'rxPhotos', pid)).then(s => {
+      const d = S.photos[pid] = s.data()?.data || '';
+      if (d) document.querySelectorAll(`img[data-pid="${CSS.escape(pid)}"]`).forEach(i => i.src = d);
+    }).catch(() => { delete S.photos[pid]; });
+  }
+  return '';
+}
+const thumbKey = r => `t:${r.id}:${coverId(r)}`;
+function tileSrc(r){
+  if (coverId(r)) return { src: S.photos[thumbKey(r)] || '' };
+  return r.photoUrl ? { src: r.photoUrl } : null;
+}
+let thumbObs;
+function observeThumbs(){
+  thumbObs?.disconnect();
+  thumbObs = new IntersectionObserver(es => es.forEach(e => {
+    if (!e.isIntersecting) return;
+    thumbObs.unobserve(e.target);
+    const r = S.recipes.find(x => x.id === e.target.dataset.id); if (r) loadThumb(r);
+  }), { rootMargin: '400px' });
+  document.querySelectorAll('img[data-thumb]:not([src])').forEach(i => thumbObs.observe(i.closest('.tile')));
+}
+async function loadThumb(r){
+  const cid = coverId(r), key = thumbKey(r); if (!cid || key in S.photos) return;
+  S.photos[key] = null;
+  try {
+    let src = r.thumbOf === cid ? (await getDoc(doc(db, 'rxPhotos', r.id + '~t'))).data()?.data || '' : '';
+    if (!src){   // no small copy yet: make one from the full photo and keep it for everyone
+      const full = S.photos[cid] || (await getDoc(doc(db, 'rxPhotos', cid))).data()?.data || '';
+      if (!full){ S.photos[key] = ''; return; }
+      src = await resizeImage(full, 420, 0.72);
+      setDoc(doc(db, 'rxPhotos', r.id + '~t'), { data: src })
+        .then(() => updateDoc(doc(db, 'rxRecipes', r.id), { thumbOf: cid })).catch(e => console.error(e));
+    }
+    S.photos[key] = src;
+    document.querySelectorAll(`img[data-thumb="${CSS.escape(r.id)}"]`).forEach(i => i.src = src);
+  } catch (e){ console.error(e); delete S.photos[key]; }
+}
+async function addMealPhotos(id, files){
+  const r = S.recipes.find(x => x.id === id); if (!r || !files.length) return;
+  toast(files.length > 1 ? 'Adding your photos…' : 'Adding your photo…');
+  try {
+    const add = [];
+    for (const f of files.slice(0, 6)){
+      let data = await resizeImage(f, 1400, 0.8);
+      if (data.length > 900000) data = await resizeImage(f, 1000, 0.7);
+      const pid = `${id}~m~${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      await setDoc(doc(db, 'rxPhotos', pid), { data, recipe: id, by: S.user.uid });
+      S.photos[pid] = data;
+      add.push({ id: pid, uid: S.user.uid, name: me().name, at: iso(new Date()) });
+    }
+    await updateDoc(doc(db, 'rxRecipes', id), { meals: [...add, ...(r.meals || [])] });
+    toast(add.length > 1 ? `${add.length} photos added` : 'Photo added');
+  } catch (e){ console.error(e); toast("Couldn't add the photo"); }
+}
+function viewPhoto(id, pid){
+  const r = S.recipes.find(x => x.id === id), p = r && gallery(r).find(x => x.id === pid);
+  if (!p) return viewRecipe(id);
+  S.liveSheet = () => viewPhoto(id, pid); S.view = '';
+  const src = photoData(pid), cover = coverId(r) === pid;
+  const canDel = p.kind === 'meal' ? p.uid === S.user.uid || r.createdBy?.uid === S.user.uid || isAdmin() : r.createdBy?.uid === S.user.uid || isAdmin();
+  openSheet(`<img class="big" data-pid="${esc(pid)}" alt="" ${src ? `src="${src}"` : ''}>
+    <h2>${esc(r.title)}</h2>
+    <p class="note">${p.kind === 'meal' ? `Added by ${esc(p.name || 'someone')}${p.at ? ` on ${esc(fromIso(p.at).toLocaleDateString('en-NZ', { day: 'numeric', month: 'long', year: 'numeric' }))}` : ''}` : 'Came with the recipe.'}${cover ? ' · Cover photo' : ''}</p>
+    <div class="btns">${cover ? '' : `<button class="btn tag" data-a="photoCover" data-id="${r.id}" data-pid="${esc(pid)}">Use as cover</button>`}
+      ${canDel ? `<button class="btn danger" data-a="photoDel" data-id="${r.id}" data-pid="${esc(pid)}">Delete photo</button>` : ''}
+      <button class="btn pri" data-a="viewRecipe" data-id="${r.id}">Back</button></div>`);
 }
 
 /* ---------- people & dietary needs ---------- */
@@ -339,17 +431,23 @@ function viewRecipe(id){
   const flags = checkRecipe(r.ingredients, people);
   const canDelete = r.createdBy?.uid === S.user.uid || isAdmin();
   let host = ''; try { host = r.source?.url ? new URL(r.source.url).hostname.replace(/^www\./, '') : ''; } catch {}
-  if (r.hasPhoto && !(id in S.photos)){
-    S.photos[id] = null;
-    getDoc(doc(db, 'rxPhotos', id)).then(s => { S.photos[id] = s.data()?.data || ''; if (S.liveSheet) S.liveSheet(); }).catch(() => {});
-  }
+  const cid = coverId(r), pics = gallery(r);
   const mine = r.stars?.[S.user.uid] || 0, avg = avgStars(r), raters = Object.values(r.stars || {}).filter(n => n > 0).length;
   const times = [r.prepTime && `Prep ${r.prepTime}`, r.cookTime && `Cook ${r.cookTime}`, r.totalTime && `Total ${r.totalTime}`].filter(Boolean);
   const nut = r.nutrition?.website;
   const conv = (r.ingredients || []).some(i => i.was) || !!r.stepsWas, orig = conv && S.showOrig === id;
   const NUT = [['carbs', 'Carbs', 'g'], ['sugar', 'Sugar', 'g'], ['fat', 'Fat', 'g'], ['satFat', 'Sat. fat', 'g'], ['protein', 'Protein', 'g'], ['fibre', 'Fibre', 'g'], ['kcal', 'Energy', ' kcal']];
-  const hero = S.photos[id] || (!r.hasPhoto && r.photoUrl) || '';
-  openSheet(`${hero ? `<img class="hero" src="${esc(hero)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}<h2>${esc(r.title)}</h2>
+  const heroSrc = cid ? photoData(cid) : r.photoUrl || '';
+  const hero = cid || r.photoUrl ? `<img class="hero" ${cid ? `data-pid="${esc(cid)}"` : ''} ${heroSrc ? `src="${esc(heroSrc)}"` : ''} alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
+  const strip = `<h3>Photos</h3>
+    ${pics.length ? '' : '<p class="note">Made it? Add a photo of how yours turned out.</p>'}
+    <div class="strip">${pics.map(p => { const s = photoData(p.id); return `<button class="ph${p.id === cid ? ' cov' : ''}" data-a="viewPhoto" data-id="${r.id}" data-pid="${esc(p.id)}" aria-label="${p.kind === 'meal' ? `Photo by ${esc(p.name || 'someone')}` : 'Photo that came with the recipe'}">
+        <img data-pid="${esc(p.id)}" alt="" ${s ? `src="${s}"` : ''}></button>`; }).join('')}
+      ${touch() ? `<button class="ph add" data-a="mealCam" data-id="${r.id}"><b>📷</b>Take photo</button>` : ''}
+      <button class="ph add" data-a="mealPick" data-id="${r.id}"><b>＋</b>${touch() ? 'From phone' : 'Add photo'}</button></div>
+    <input type="file" id="meal_cam" data-id="${r.id}" accept="image/*" capture="environment" hidden>
+    <input type="file" id="meal_pick" data-id="${r.id}" accept="image/*" multiple hidden>`;
+  openSheet(`${hero}<h2>${esc(r.title)}</h2>
     <div class="sub">${(r.cats || []).map(c => `<span class="pill plain">${esc(c)}</span>`).join('')}
       ${(r.tags || []).map(c => `<span class="pill plain">#${esc(c)}</span>`).join('')}
       ${r.servings ? `<span>Serves ${esc(r.servingsText && /\d\s*[-–]\s*\d/.test(r.servingsText) ? r.servingsText.replace(/^\D+/, '') : r.servings)}</span>` : ''}
@@ -358,6 +456,7 @@ function viewRecipe(id){
       ${host ? `<a href="${esc(r.source.url)}" target="_blank" rel="noopener">${esc(host)}</a>` : ''}</div>
     <div class="rate" role="group" aria-label="Your rating">${[1, 2, 3, 4, 5].map(n => `<button data-a="rate" data-id="${r.id}" data-n="${n === mine ? 0 : n}" aria-label="${n} star${n > 1 ? 's' : ''}" class="${n <= mine ? 'on' : ''}">★</button>`).join('')}
       <span class="note">${mine ? 'Your rating' : 'Tap to rate'}${raters ? ` · family average ${avg.toFixed(1)} from ${raters}` : ''}</span></div>
+    ${strip}
     <h3>Dietary check</h3>
     <div class="btns" style="margin-top:0"><button class="btn sm ${scope === 'mine' ? 'pri' : ''}" data-a="flagScope" data-s="mine">My household</button>
       <button class="btn sm ${scope === 'all' ? 'pri' : ''}" data-a="flagScope" data-s="all">Whole family</button></div>
@@ -745,7 +844,7 @@ function bookmarklet(){
   return 'javascript:' + code;
 }
 function openImport(){
-  S.liveSheet = null; S.view = ''; S.importList = null; S.imPhotos = null;
+  S.liveSheet = null; S.view = ''; S.importList = null; S.imPhotos = null; S.imPages = [];
   const ai = getAi(), ready = aiReady(ai);
   openSheet(`<h2>Add recipes</h2>
     <p class="note">${usingFamily(ai) ? `Using the family AI (up to ${+S.access.ai?.dailyLimit || 20} reads a day each).` : ready ? `AI on this phone: ${esc(PROVIDERS[ai.provider])}.` : 'No AI on this phone, so photos and links use the free Copy prompt route.'}</p>
@@ -760,10 +859,10 @@ function openImport(){
       <p class="note">On Android you can also Share a recipe page to this app once it's installed.</p>
     </details>
     <h3>From a photo</h3>
-    <p class="note">A cookbook page, a magazine or a handwritten family card. Several photos for a long recipe are fine.</p>
+    <p class="note">A cookbook page, a magazine or a handwritten family card. ${touch() ? 'Take a photo of each page, up to 4.' : 'Up to 4 photos for a long recipe.'}</p>
+    <input type="file" id="im_cam" accept="image/*" capture="environment" hidden>
     <input type="file" id="im_photo" accept="image/*" multiple hidden>
-    <div class="btns" style="margin-top:6px"><button class="btn tag" data-a="imPhotoPick">${ready ? 'Take or choose photos' : 'Choose photos'}</button>
-      ${ready ? '' : '<button class="btn" data-a="imPhotoPrompt">Copy prompt for a chatbot</button>'}</div>
+    <div id="im_pages"></div>
     <h3>Paste the recipe text</h3>
     <label>Text<textarea id="im_text" rows="5" placeholder="Paste a recipe from an email, a message, a website…"></textarea></label>
     <div class="btns" style="margin-top:6px">${ready ? '<button class="btn tag" data-a="imText">Read it</button>' : ''}<button class="btn" data-a="imTextPrompt">Copy prompt for a chatbot</button></div>
@@ -777,6 +876,19 @@ function openImport(){
     <input type="file" id="imp_file" accept=".paprikarecipes,application/zip" hidden>
     <div class="btns"><button class="btn" data-a="impPick">Choose Paprika file</button><button class="btn" data-a="closeSheet">Close</button></div>
     <p class="note" id="impStatus"></p>`);
+  drawPages();
+}
+// pages photographed or chosen for one recipe, waiting to be read
+function drawPages(){
+  const box = $('#im_pages'); if (!box) return;
+  const pages = S.imPages || [], n = pages.length, ready = aiReady(), full = n >= 4;
+  box.innerHTML = `${n ? `<div class="strip">${pages.map((p, i) => `<div class="ph page"><img src="${p}" alt="Page ${i + 1}"><button class="x" data-a="imPageDel" data-i="${i}" aria-label="Remove page ${i + 1}">✕</button></div>`).join('')}</div>` : ''}
+    <div class="btns" style="margin-top:6px">
+      ${touch() && !full ? `<button class="btn ${n ? '' : 'tag'}" data-a="imCam">📷 ${n ? 'Take the next page' : 'Take a photo'}</button>` : ''}
+      ${full ? '' : `<button class="btn ${n || touch() ? '' : 'tag'}" data-a="imPhotoPick">${n ? 'Add from phone' : touch() ? 'Choose from phone' : 'Choose photos'}</button>`}
+      ${n ? (ready ? `<button class="btn tag" data-a="imPagesRead">Read the recipe${n > 1 ? ` (${n} pages)` : ''}</button>`
+                   : '<button class="btn tag" data-a="imPhotoPrompt">Copy prompt for a chatbot</button>') : ''}
+      ${n ? '<button class="btn" data-a="imPagesClear">Start again</button>' : ''}</div>`;
 }
 const imStatus = m => { const s = $('#im_status'); if (s) s.textContent = m; else if (m) toast(m); };
 async function runAi(input, from, extra = {}){
@@ -795,14 +907,24 @@ async function copyForChatbot(kind, opts, hint){
   imStatus(hint);
 }
 async function photosChosen(files){
-  imStatus('Getting the photos ready…');
+  S.imPages ||= [];
+  const room = 4 - S.imPages.length;
+  if (room <= 0){ imStatus('That\'s 4 pages, the most for one recipe.'); return; }
+  imStatus('Getting the photo ready…');
   try {
-    const imgs = [];
-    for (const f of [...files].slice(0, 4)) imgs.push(await resizeImage(f, 1600, 0.85));
-    const thumb = await resizeImage(files[0], 900, 0.72);   // kept as the recipe's photo
-    if (aiReady()) runAi({ images: imgs }, 'a photo', { photo: thumb });
-    else { S.imPhotos = { thumb }; imStatus(`${imgs.length} photo${imgs.length > 1 ? 's' : ''} ready. Tap Copy prompt, attach the same photo in your chatbot, then paste its reply below.`); }
+    for (const f of [...files].slice(0, room)) S.imPages.push(await resizeImage(f, 1600, 0.85));
+    if (files.length > room) toast('Only the first 4 pages are used');
+    const n = S.imPages.length;
+    imStatus(aiReady() ? `${n} page${n > 1 ? 's' : ''} ready. Take another page, or tap Read the recipe.`
+      : `${n} page${n > 1 ? 's' : ''} ready. Tap Copy prompt, attach the same photo${n > 1 ? 's' : ''} in your chatbot, then paste its reply below.`);
+    if (!aiReady()) S.imPhotos = { thumb: await resizeImage(S.imPages[0], 900, 0.72) };
   } catch (e){ imStatus(e.message); }
+  drawPages();
+}
+async function readPages(){
+  const imgs = S.imPages || []; if (!imgs.length) return;
+  const thumb = await resizeImage(imgs[0], 900, 0.72);   // kept as the recipe's photo
+  runAi({ images: imgs }, imgs.length > 1 ? `${imgs.length} photos` : 'a photo', { photo: thumb });
 }
 // arriving from the browser button (#import=…) or Android's Share menu (?url= / ?text=)
 function incomingImport(){
@@ -943,7 +1065,12 @@ const A = {
   saveRecipe,
   delRecipe: async t => { const r = S.recipes.find(x => x.id === t.dataset.id);
     if (!r || !confirm(`Delete “${r.title}” for the whole family? This can't be undone.`)) return;
-    try { await deleteDoc(doc(db, 'rxRecipes', r.id)); if (r.hasPhoto) deleteDoc(doc(db, 'rxPhotos', r.id)).catch(() => {}); closeSheet(); toast('Deleted'); } catch (e){ toast("Couldn't delete"); } },
+    try {
+      await deleteDoc(doc(db, 'rxRecipes', r.id));
+      for (const pid of [...gallery(r).map(p => p.id), ...(r.thumbOf ? [r.id + '~t'] : [])]) deleteDoc(doc(db, 'rxPhotos', pid)).catch(() => {});
+      closeSheet(); toast('Deleted');
+    } catch (e){ toast("Couldn't delete"); } },
+  rview: t => { LS.set('rview', t.dataset.v); renderRecipes(); },
   rate: async t => { try { await updateDoc(doc(db, 'rxRecipes', t.dataset.id), new FieldPath('stars', S.user.uid), +t.dataset.n || deleteField()); } catch (e){ toast("Couldn't save your rating"); } },
   weekPrev: () => { S.week = addDays(S.week, -7); watchWeek(); render(); },
   weekNext: () => { S.week = addDays(S.week, 7); watchWeek(); render(); },
@@ -999,6 +1126,23 @@ const A = {
       : 'Prompt copied. Paste it into a chatbot that can open web pages (ChatGPT, Claude, Gemini), then paste its reply below. Or use the browser button.'); },
   imCopyBm: async () => { try { await navigator.clipboard.writeText(bookmarklet()); toast('Button code copied'); } catch (e){ toast("Couldn't copy"); } },
   imPhotoPick: () => $('#im_photo').click(),
+  imCam: () => $('#im_cam').click(),
+  imPageDel: t => { S.imPages.splice(+t.dataset.i, 1); S.imPhotos = null; imStatus(''); drawPages(); },
+  imPagesClear: () => { S.imPages = []; S.imPhotos = null; imStatus(''); drawPages(); },
+  imPagesRead: readPages,
+  mealCam: () => $('#meal_cam').click(),
+  mealPick: () => $('#meal_pick').click(),
+  viewPhoto: t => viewPhoto(t.dataset.id, t.dataset.pid),
+  photoCover: async t => { try { await updateDoc(doc(db, 'rxRecipes', t.dataset.id), { cover: t.dataset.pid }); toast('Cover photo changed'); viewRecipe(t.dataset.id); } catch (e){ toast("Couldn't change the cover"); } },
+  photoDel: async t => {
+    const r = S.recipes.find(x => x.id === t.dataset.id), pid = t.dataset.pid; if (!r || !confirm('Delete this photo for everyone?')) return;
+    try {
+      const upd = pid === r.id ? { hasPhoto: false } : { meals: (r.meals || []).filter(m => m.id !== pid) };
+      if (r.cover === pid) upd.cover = deleteField();
+      await updateDoc(doc(db, 'rxRecipes', r.id), upd);
+      await deleteDoc(doc(db, 'rxPhotos', pid)); delete S.photos[pid];
+      toast('Photo deleted'); viewRecipe(r.id);
+    } catch (e){ console.error(e); toast("Couldn't delete the photo"); } },
   imPhotoPrompt: () => copyForChatbot('photo', {}, 'Prompt copied. In ChatGPT, Claude or Gemini, attach your photo, paste the prompt, then paste the reply below.'),
   imText: () => { const text = $('#im_text').value.trim(); if (!text){ imStatus('Paste a recipe first'); return; } runAi({ text }, 'pasted text'); },
   imTextPrompt: () => { const text = $('#im_text').value.trim(); if (!text){ imStatus('Paste a recipe first'); return; }
@@ -1068,7 +1212,8 @@ document.addEventListener('change', e => {
   if (t.id === 'rcat'){ LS.set('cat', t.value); renderRecipes(); }
   if (t.id === 'rsort') renderRecipes();
   if (t.id === 'imp_file' && t.files[0]) loadImportFile(t.files[0]);
-  if (t.id === 'im_photo' && t.files.length){ const fs = [...t.files]; t.value = ''; photosChosen(fs); }
+  if ((t.id === 'im_photo' || t.id === 'im_cam') && t.files.length){ const fs = [...t.files]; t.value = ''; photosChosen(fs); }
+  if ((t.id === 'meal_cam' || t.id === 'meal_pick') && t.files.length){ const fs = [...t.files]; t.value = ''; addMealPhotos(t.dataset.id, fs); }
   if (t.id === 'ai_p') drawAiFields();
 });
 $('#rq').addEventListener('input', renderRecipes);
