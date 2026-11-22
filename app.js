@@ -52,7 +52,9 @@ async function keepAwake(){
 }
 document.addEventListener('visibilitychange', () => keepAwake());
 
-const avgStars = r => { const v = Object.values(r.stars || {}).filter(n => n > 0); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0; };
+// star ratings count within your household only: each household sees its own average
+const houseStars = r => Object.entries(r.stars || {}).filter(([uid, n]) => n > 0 && (uid === S.user?.uid || S.members?.[uid]?.household === S.hid)).map(([, n]) => n);
+const avgStars = r => { const v = houseStars(r); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0; };
 const starText = n => n ? '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.round(n)) : '';
 
 /* ---------- state ---------- */
@@ -178,7 +180,7 @@ async function start(){
     setFamilyAi(S.access.ai?.enabled ? familyRead : null); render(); if (S.view === 'settings') openSettings(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxRecipes'), s => { S.recipes = s.docs.map(d => ({ id: d.id, ...d.data() })); convertOld(); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxPeople'), s => { S.people = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name)); render(); }, denied));
-  unsubs.push(onSnapshot(collection(db, 'rxMembers'), s => { S.members = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); }, denied));
+  unsubs.push(onSnapshot(collection(db, 'rxMembers'), s => { S.members = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxFamilyMeals'), s => { S.familyMeals = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.date.localeCompare(b.date)); render(); if (S.view === 'fm') viewFamilyMeal(S.fmId); }, denied));
   unsubs.push(onSnapshot(doc(db, 'rxHouseholds', S.hid), s => { S.household = s.data() || {}; }, () => {}));
   watchWeek();
@@ -561,7 +563,7 @@ function viewRecipe(id){
   const canDelete = r.createdBy?.uid === S.user.uid || isAdmin();
   let host = ''; try { host = r.source?.url ? new URL(r.source.url).hostname.replace(/^www\./, '') : ''; } catch {}
   const cid = coverId(r), pics = gallery(r);
-  const mine = r.stars?.[S.user.uid] || 0, avg = avgStars(r), raters = Object.values(r.stars || {}).filter(n => n > 0).length;
+  const mine = r.stars?.[S.user.uid] || 0, avg = avgStars(r), raters = houseStars(r).length;
   const times = [r.prepTime && `Prep ${r.prepTime}`, r.cookTime && `Cook ${r.cookTime}`, r.totalTime && `Total ${r.totalTime}`].filter(Boolean);
   const nut = r.nutrition?.website;
   const conv = (r.ingredients || []).some(i => i.was) || !!r.stepsWas, orig = conv && S.showOrig === id;
@@ -607,7 +609,7 @@ function viewRecipe(id){
       ${r.createdBy ? `<span>Added by ${esc(r.createdBy.name)}${r.imported?.from ? ` from ${esc(r.imported.from)}` : ''}</span>` : ''}
       ${host ? `<a href="${esc(r.source.url)}" target="_blank" rel="noopener">${esc(host)}</a>` : ''}</div>
     <div class="rate" role="group" aria-label="Your rating">${[1, 2, 3, 4, 5].map(n => `<button data-a="rate" data-id="${r.id}" data-n="${n === mine ? 0 : n}" aria-label="${n} star${n > 1 ? 's' : ''}" class="${n <= mine ? 'on' : ''}">★</button>`).join('')}
-      <span class="note">${mine ? 'Your rating' : 'Tap to rate'}${raters ? ` · family average ${avg.toFixed(1)} from ${raters}` : ''}</span></div>
+      <span class="note">${mine ? 'Your rating' : 'Tap to rate'}${raters > 1 || raters && !mine ? ` · ${esc(hhName(S.hid))} average ${avg.toFixed(1)} from ${raters}` : ''}</span></div>
     <div class="marks" role="group" aria-label="Your lists">${LISTS.map(([k, l, ic]) => `<button class="chip${lists.includes(k) ? ' on' : ''}" data-a="mark" data-id="${r.id}" data-k="${k}" aria-pressed="${lists.includes(k)}">${ic} ${l}</button>`).join('')}
       ${fams ? `<span class="note">♥ ${fams === 1 && lists.includes('fav') ? 'Your favourite' : `Favourite of ${fams} in the family`}</span>` : ''}</div>
     ${strip}
