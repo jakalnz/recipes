@@ -105,9 +105,12 @@ export function shoppingList(entries, { pantry } = {}){
       if (ing.heading) continue;
       const p = parseLine(ing.original);
       if (p.optional) continue;
-      const name = shopName(ing.original); if (!name) continue;
+      // "butter or margarine": the first is bought unless you choose the other on the list
+      const opts = (p.options || []).length > 1 ? [...new Set(p.options.map(shopName).filter(Boolean))] : [];
+      const name = opts[0] || shopName(ing.original); if (!name) continue;
       const key = norm(name);
       const e = by.get(key) || { key, name, amounts: {}, from: [], lines: [], pantry: isPantry(name, pantry) };
+      if (opts.length > 1) e.options = [...new Set([...(e.options || []), ...opts])];
       if (p.qty != null){
         let u = p.unit || 'each', q = p.qty * factor;
         if (u === 'kg'){ u = 'g'; q *= 1000; } if (u === 'l'){ u = 'ml'; q *= 1000; }

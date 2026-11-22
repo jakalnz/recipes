@@ -63,3 +63,11 @@ test('amounts and categories', () => {
   assert.ok(isPantry('Salt')); assert.ok(isPantry('Cooking salt')); assert.ok(!isPantry('Cayenne pepper'));
   assert.ok(isPantry('Cumin powder')); assert.ok(isPantry('Beef bouillon cubes')); assert.ok(!isPantry('Beef mince'));
 });
+
+test('a line with choices lists the first, and offers the others', () => {
+  const r = { servings: 4, ingredients: [{ original: '50 g butter or margarine, melted' }, { original: '1 L chicken or vegetable stock' }] };
+  const l = shoppingList([{ recipe: r, servings: 4, label: 'Pie' }]);
+  const b = l.find(x => x.name === 'Butter'), st = l.find(x => x.name === 'Chicken stock');
+  assert.deepEqual(b.options, ['Butter', 'Margarine']);
+  assert.deepEqual(st.options, ['Chicken stock', 'Vegetable stock']);
+});

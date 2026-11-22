@@ -73,3 +73,21 @@ test('overrides: choose a food, enter grams, or leave a line out', () => {
   const c = computeRecipe(rec, idx, { 1: { skip: true } });
   assert.equal(c.lines[1].status, 'skipped');
 });
+
+test('choices in one line: "or", "/", "(or …)", with a shared last word spread', () => {
+  const o = l => parseLine(l).options;
+  assert.deepEqual(o('50 g butter or olive oil'), ['butter', 'olive oil']);
+  assert.deepEqual(o('1 L chicken or vegetable stock'), ['chicken stock', 'vegetable stock']);
+  assert.deepEqual(o('250 ml soy or almond milk'), ['soy milk', 'almond milk']);
+  assert.deepEqual(o('2 tbsp soy sauce (or tamari)'), ['soy sauce', 'tamari']);
+  assert.deepEqual(o('50 g butter or margarine, melted'), ['butter', 'margarine']);
+  assert.deepEqual(o('200 g chicken or tofu'), ['chicken', 'tofu']);
+});
+test('not choices: descriptions, "to taste", and a second measure', () => {
+  const n = l => parseLine(l).options.length;
+  assert.equal(n('2 cups fresh or frozen peas'), 1);
+  assert.equal(n('1 onion, chopped or sliced'), 1);
+  assert.equal(n('salt, or to taste'), 1);
+  assert.equal(n('125 ml / ½ cup water'), 1);
+  assert.equal(n('salt and pepper'), 1);
+});

@@ -46,6 +46,29 @@ export const SIMPLIFY_SCHEMA = {
 };
 export const simplifyAsk = ({ title = '', ingredients = [], steps = [] }) => `Simplify the method of "${title}".\n\nINGREDIENTS:\n${ingredients.join('\n')}\n\nMETHOD:\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
 
+// Swap ideas for what people need to avoid (the app and the server function ask the same; a test checks they match).
+// Only the ingredients and a plain list of things to avoid are sent: never names or health conditions.
+export const SWAP_INSTRUCTIONS = `You suggest ingredient swaps for a family recipe app in New Zealand.
+You are given a recipe's ingredients and a list of things some of the people eating it need to avoid or have less of.
+For each ingredient line that contains something on the list, suggest one swap that keeps the dish working, using ingredients that are easy to buy in a New Zealand supermarket.
+Give "ingredient" exactly as the line is written, and "swap" as the whole new line, with a sensible amount.
+Check that the swap contains nothing else on the list. Put a short tip in "tip" if the cooking needs to change, for example a different time or method; otherwise leave it empty.
+Leave out lines with no good swap. Do not mention medicines or doses, and do not give medical advice.`;
+export const SWAP_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['swaps'],
+  properties: {
+    swaps: { type: 'array', items: {
+      type: 'object', additionalProperties: false, required: ['ingredient', 'swap', 'tip'],
+      properties: {
+        ingredient: { type: 'string', description: 'the ingredient line exactly as given' },
+        swap: { type: 'string', description: 'the whole new ingredient line, with an amount' },
+        tip: { type: 'string', description: 'a short cooking tip for the swap; empty if none' },
+      },
+    } },
+  },
+};
+export const swapAsk = ({ title = '', ingredients = [], avoid = [] }) => `Suggest swaps for "${title}".\n\nAVOID OR HAVE LESS OF:\n${avoid.join('\n')}\n\nINGREDIENTS:\n${ingredients.join('\n')}`;
+
 export const MODEL = 'claude-opus-5-5';
 
 // input: { images?: [dataURL], text?: string, url?: string }  → recipe JSON. `client` is an Anthropic SDK client.
@@ -61,6 +84,12 @@ export async function readRecipe(client, input){
 export async function simplifySteps(client, input){
   const r = await run(client, SIMPLIFY_INSTRUCTIONS, SIMPLIFY_SCHEMA, [{ type: 'text', text: simplifyAsk(input) }]);
   return r.json ? { simple: r.json, usage: r.usage } : r;
+}
+
+// input: { title, ingredients: [string], avoid: [string] } → { swaps: { swaps: [...] } }
+export async function swapIdeas(client, input){
+  const r = await run(client, SWAP_INSTRUCTIONS, SWAP_SCHEMA, [{ type: 'text', text: swapAsk(input) }]);
+  return r.json ? { swaps: r.json, usage: r.usage } : r;
 }
 
 async function run(client, system, schema, content, tools){

@@ -17,11 +17,11 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   getDoc, setDoc, updateDoc, deleteDoc, addDoc, deleteField, arrayUnion, arrayRemove, serverTimestamp, FieldPath, connectFirestoreEmulator, writeBatch,
   query, where, documentId, getDocs }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { PRESETS, LEVELS, presetById, checkRecipe, itemActive } from './diet.js';
+import { PRESETS, LEVELS, presetById, checkRecipe, itemActive, openFlags, swapLine, avoidList, suitsAll } from './diet.js';
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
 import { metricRecipe } from './units.js';
 import { findRecipe, fromJsonLd, fromAi, parseLooseJson } from './jsonld.js';
-import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily, simplifySteps, simplifyPrompt } from './ai.js';
+import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily, simplifySteps, simplifyPrompt, swapIdeas, swapPrompt, cleanSwaps } from './ai.js';
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 import { cleanSimple, missingNumbers, highlight } from './simplify.js';
 import { makeIndex, computeRecipe, searchFoods, matchFood, parseLine } from './nutrition.js';
@@ -229,13 +229,13 @@ function renderRecipes(){
     ? `<p class="empty">No recipes yet.<br>Tap “+ Add recipe” to start the family book.</p>`
     : !list.length ? `<p class="empty">Nothing matches.</p>`
     : grid ? `<ul class="tiles">${list.map(r => {
-        const t = tileSrc(r), avg = avgStars(r), flags = checkRecipe(r.ingredients, mine);
+        const t = tileSrc(r), avg = avgStars(r), flags = openFlags(checkRecipe(r.ingredients, mine));
         return `<li class="tile" data-a="viewRecipe" data-id="${r.id}">
           ${t ? `<img data-thumb="${r.id}" alt="" ${t.src ? `src="${esc(t.src)}"` : ''} referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">` : ''}
           <div class="noimg" aria-hidden="true">${esc((r.title || '?').trim()[0] || '?')}</div>
           <div class="tt"><b>${listIcons(r)}${esc(r.title)}</b>${avg ? `<span class="stars">${starText(avg)}</span>` : ''}${flags.length ? `<span class="pill ${flags[0].level === 'allergy' ? 'bad' : 'warn'}">${flags.length} flag${flags.length === 1 ? '' : 's'}</span>` : ''}</div></li>`; }).join('')}</ul>`
     : `<ul class="rows">${list.map(r => {
-        const flags = checkRecipe(r.ingredients, mine);
+        const flags = openFlags(checkRecipe(r.ingredients, mine));
         const worst = flags[0];
         return `<li class="row" data-a="viewRecipe" data-id="${r.id}"><div class="grow">
           <div class="nm">${listIcons(r)}${esc(r.title)}</div>
@@ -408,6 +408,87 @@ async function savePerson(){
   } catch (e){ console.error(e); toast("Couldn't save. Only people in their household can change this."); }
 }
 
+/* ---------- swap ideas and versions ---------- */
+const flagPeople = () => (LS.get('flagScope') || 'mine') === 'all' ? S.people : myPeople();
+const swapState = rid => (S.swaps?.rid === rid ? S.swaps : (S.swaps = { rid, picks: new Set(), ai: null, busy: false }));
+const aiSwapInput = (r, flags) => ({ title: r.title || '', ingredients: simpleInput(r).ingredients, avoid: avoidList(flags) });
+// keep AI swaps that are for a flagged line and suit everyone that line was flagged for
+function acceptAiSwaps(r, flags, people, list){
+  const lines = simpleInput(r).ingredients, k = s => String(s).toLowerCase().replace(/\s+/g, ' ').trim();
+  const open = openFlags(flags);
+  return list.map(s => {
+    const index = lines.findIndex(l => k(l) === k(s.ingredient)); if (index < 0) return null;
+    const fs = open.filter(f => f.lines.some(l => l.index === index && !l.alt)); if (!fs.length) return null;
+    // for whoever it suits; anyone it doesn't is named next to the idea
+    const ok = fs.filter(f => suitsAll(s.swap, people.filter(p => p.id === f.personId))); if (!ok.length) return null;
+    return { index, swap: s.swap, tip: s.tip, who: [...new Set(ok.map(f => f.person))], ids: [...new Set(ok.map(f => f.personId))] };
+  }).filter(Boolean);
+}
+// built-in ideas for the open flags, then the AI's
+function swapIdeasFor(r, flags, people = []){
+  const st = swapState(r.id), lines = simpleInput(r).ingredients, m = new Map();
+  for (const f of openFlags(flags)) for (const l of f.lines){
+    if (l.alt || !l.swap) continue;
+    const newLine = l.swap.to ? swapLine(l.ingredient, l.word, l.swap.to) : null;
+    const k = `b|${l.index}|${l.swap.to || l.swap.tip}`;
+    const e = m.get(k) || { key: k, index: l.index, line: l.ingredient, newLine, tip: l.swap.tip || (l.swap.to && !newLine ? `Use ${l.swap.to} instead.` : ''), who: [], ids: [] };
+    if (!e.who.includes(f.person)) e.who.push(f.person);
+    if (!e.ids.includes(f.personId)) e.ids.push(f.personId);
+    m.set(k, e);
+  }
+  for (const a of st.ai || []){ const k = `a|${a.index}|${a.swap}`; m.set(k, { key: k, index: a.index, line: lines[a.index], newLine: a.swap, tip: a.tip, who: a.who, ids: a.ids, ai: true }); }
+  // an idea for one person that doesn't suit someone else eating it
+  for (const e of m.values()) if (e.newLine) e.clash = people.filter(p => !e.ids.includes(p.id) && !suitsAll(e.newLine, [p])).map(p => p.name);
+  return [...m.values()].sort((x, y) => x.index - y.index || !!x.ai - !!y.ai);
+}
+function dietHtml(r, people, flags, scope){
+  if (!people.length) return '<p class="note">Add people and their needs on the Family tab to check recipes.</p>';
+  if (!flags.length) return `<p class="note">Nothing flagged for ${scope === 'all' ? 'the family' : 'your household'}.</p>`;
+  const st = swapState(r.id);
+  const rows = flags.map(f => `<div class="mini"><span class="pill ${f.alt ? 'plain' : f.level === 'allergy' ? 'bad' : 'warn'}">${f.alt ? 'has a choice' : esc(LEVELS[f.level].short)}</span>
+    <span class="grow"><strong>${esc(f.person)}</strong>: ${esc(f.label)} · <span class="note">${f.lines.map(l => `${esc(l.ingredient)}${l.alt ? ` <b>→ use the ${esc(l.alt)} option</b>` : ''}`).join('; ')}</span>${f.hint && !f.alt ? `<br><span class="note">${esc(f.hint)}</span>` : ''}</span></div>`).join('');
+  if (!openFlags(flags).length) return rows;
+  const ideas = swapIdeasFor(r, flags, people), picked = ideas.filter(i => i.newLine && st.picks.has(i.key)).length;
+  const who = i => `<small class="note">${i.ai ? 'AI idea · ' : ''}for ${esc(i.who.join(', '))}</small>${i.clash?.length ? ` <small class="warntext">· not suitable for ${esc(i.clash.join(', '))}</small>` : ''}`;
+  return `${rows}
+    <h4 class="ph4">Swap ideas</h4>
+    <p class="note">Common swaps, not medical advice. Tick the ones you'd like, then make your own version of the recipe. The original stays as it is.</p>
+    <div class="swaps">${ideas.map(i => i.newLine
+      ? `<label class="cb"><input type="checkbox" data-a-change="swapPick" data-id="${r.id}" data-k="${esc(i.key)}" ${st.picks.has(i.key) ? 'checked' : ''}>
+          <span>${esc(i.line)} → <b>${esc(i.newLine)}</b>${i.tip ? `<br><small class="note">${esc(i.tip)}</small>` : ''}<br>${who(i)}</span></label>`
+      : `<div class="mini"><span class="grow">${esc(i.line)}<br><small>${esc(i.tip)}</small><br>${who(i)}</span></div>`).join('') || '<p class="note">No built-in ideas for these.</p>'}</div>
+    ${st.ai && !st.ai.length ? '<p class="note">The AI had no other ideas.</p>' : ''}
+    <div class="btns" style="margin-top:6px">${aiReady() ? `<button class="btn sm" data-a="swapAi" data-id="${r.id}" ${st.busy ? 'disabled' : ''}>${st.busy ? 'Asking the AI…' : st.ai ? 'Ask the AI again' : 'Ask AI for more ideas'}</button>` : ''}
+      ${picked ? `<button class="btn sm tag" data-a="swapVersion" data-id="${r.id}">Make a version with ${picked} swap${picked === 1 ? '' : 's'}</button>` : ''}</div>
+    ${aiReady() ? '' : `<details class="sub-d"><summary>Ask a chatbot for more ideas</summary>
+      <p class="note">Only the ingredients and what to avoid are copied, not anyone's name or health details.</p>
+      <div class="btns" style="margin-top:0"><button class="btn sm" data-a="swapCopy" data-id="${r.id}">Copy prompt</button></div>
+      <label>Paste the chatbot's reply<textarea id="swap_reply" rows="3"></textarea></label>
+      <div class="btns" style="margin-top:6px"><button class="btn sm tag" data-a="swapUse" data-id="${r.id}">Use this reply</button></div></details>`}`;
+}
+function versionsHtml(r){
+  const parent = r.variantOf && S.recipes.find(x => x.id === r.variantOf), kids = S.recipes.filter(x => x.variantOf === r.id).sort(byTitle);
+  if (!parent && !kids.length) return '';
+  return `<h3>Versions</h3>
+    ${parent ? `<p class="note">Made from <button class="link" data-a="viewRecipe" data-id="${parent.id}">${esc(parent.title)}</button> with swaps.</p>` : ''}
+    ${kids.length ? `<div class="marks">${kids.map(k => `<span class="chip pair"><button data-a="viewRecipe" data-id="${k.id}">${esc(k.title)}</button></span>`).join('')}</div>` : ''}`;
+}
+function makeVersion(r){
+  const flags = checkRecipe(r.ingredients, flagPeople()), st = swapState(r.id);
+  const ideas = swapIdeasFor(r, flags).filter(i => i.newLine && st.picks.has(i.key)); if (!ideas.length) return;
+  const byIdx = new Map(ideas.map(i => [i.index, i]));   // one swap per line: the last ticked
+  const who = [...new Set(ideas.flatMap(i => i.who))], ids = [...new Set(ideas.flatMap(i => i.ids))];
+  const tips = ideas.filter(i => i.tip).map(i => `${i.newLine}: ${i.tip}`);
+  openRecipeForm(null, {
+    title: `${r.title} (${who.length && who.length <= 2 ? 'for ' + who.join(' & ') : 'with swaps'})`,
+    cats: r.cats || [], servings: r.servings, tags: r.tags || [], servingsText: r.servingsText || '', prepTime: r.prepTime || '', cookTime: r.cookTime || '', totalTime: r.totalTime || '',
+    ingredients: (r.ingredients || []).map((ing, n) => byIdx.has(n) ? { original: byIdx.get(n).newLine } : { original: ing.original, heading: ing.heading }),
+    steps: r.steps || [], source: r.source || {}, from: 'swaps', variantOf: r.id, variantTitle: r.title, variantFor: ids,
+    notes: [`Swaps from “${r.title}”: ${[...byIdx.values()].map(i => `${i.line} → ${i.newLine}`).join('; ')}.`,
+      'The method is the same as the original, so it may still name the old ingredients.', ...(tips.length ? ['Tips: ' + tips.join(' ')] : []), r.notes || ''].filter(Boolean).join('\n'),
+  });
+}
+
 /* ---------- recipes (basic add / view / edit) ---------- */
 // draft: an imported recipe to check before saving (from a web page, photo, pasted text or chatbot reply)
 function openRecipeForm(id, draft){
@@ -416,7 +497,8 @@ function openRecipeForm(id, draft){
   S.liveSheet = null; S.view = ''; S.draft = id ? null : draft || null;
   const pic = draft?.photo || draft?.photoUrl;
   openSheet(`<h2>${id ? 'Edit recipe' : draft ? 'Check the recipe' : 'Add a recipe'}</h2>
-    ${draft ? `<p class="note">Read from ${esc(draft.from || 'the import')}. Check it over, fix anything, then Save. Ounces, pounds and °F are converted to metric when you save.</p>` : ''}
+    ${draft?.variantOf ? `<p class="note">Your version of “${esc(draft.variantTitle || '')}” with the swaps put in. Check it over, then Save. The original stays as it is.</p>`
+      : draft ? `<p class="note">Read from ${esc(draft.from || 'the import')}. Check it over, fix anything, then Save. Ounces, pounds and °F are converted to metric when you save.</p>` : ''}
     ${draft?.unclear?.length ? `<p class="warnline">The AI wasn't sure about: ${draft.unclear.map(esc).join('; ')}</p>` : ''}
     ${pic ? `<img class="formpic" src="${esc(pic)}" alt="">${draft.photoUrl && !draft.photo ? '<p class="note">Photo shown from the website.</p>' : ''}` : ''}
     <label>Title<input id="r_title" value="${esc(r.title)}"></label>
@@ -446,6 +528,7 @@ async function saveRecipe(t){
       imported: { from: d.from || 'import', at: new Date().toISOString().slice(0, 10) } });
     if (d.photoUrl && !d.photo) data.photoUrl = d.photoUrl;
     if (d.photo) data.hasPhoto = true;
+    if (d.variantOf){ delete data.imported; data.variantOf = d.variantOf; data.variantFor = d.variantFor || []; }
   }
   // what's typed is the new original; convert anything imperial to metric
   const m = metricRecipe({ ingredients: data.ingredients, steps: data.steps });
@@ -467,7 +550,7 @@ function viewRecipe(id){
   S.liveSheet = () => viewRecipe(id); S.liveSheet.rid = id; S.view = '';
   const r = S.recipes.find(x => x.id === id); if (!r){ closeSheet(); return; }
   const scope = LS.get('flagScope') || 'mine';
-  const people = scope === 'all' ? S.people : myPeople();
+  const people = flagPeople();
   const flags = checkRecipe(r.ingredients, people);
   const canDelete = r.createdBy?.uid === S.user.uid || isAdmin();
   let host = ''; try { host = r.source?.url ? new URL(r.source.url).hostname.replace(/^www\./, '') : ''; } catch {}
@@ -524,10 +607,7 @@ function viewRecipe(id){
     <h3>Dietary check</h3>
     <div class="btns" style="margin-top:0"><button class="btn sm ${scope === 'mine' ? 'pri' : ''}" data-a="flagScope" data-s="mine">My household</button>
       <button class="btn sm ${scope === 'all' ? 'pri' : ''}" data-a="flagScope" data-s="all">Whole family</button></div>
-    ${!people.length ? `<p class="note">Add people and their needs on the Family tab to check recipes.</p>`
-      : flags.length ? flags.map(f => `<div class="mini"><span class="pill ${f.level === 'allergy' ? 'bad' : 'warn'}">${esc(LEVELS[f.level].short)}</span>
-          <span class="grow"><strong>${esc(f.person)}</strong>: ${esc(f.label)} · <span class="note">${esc(f.ingredient)}</span>${f.hint ? `<br><span class="note">${esc(f.hint)}</span>` : ''}</span></div>`).join('')
-      : `<p class="note">Nothing flagged for ${scope === 'all' ? 'the family' : 'your household'}.</p>`}
+    ${dietHtml(r, people, flags, scope)}
     <div class="btns viewbar"><button class="btn sm" data-a="splitView" aria-pressed="${split}">${split ? '☰ One column' : '◫ Side by side'}</button>
       ${steps.length ? `<span class="seg" role="group" aria-label="Method"><button class="btn sm ${simpleMode ? '' : 'pri'}" data-a="stepMode" data-m="full">As written</button><button class="btn sm ${simpleMode ? 'pri' : ''}" data-a="stepMode" data-m="simple">Simple</button></span>` : ''}</div>
     <div class="cols${split ? ' on' : ''}"><section class="ci">
@@ -543,6 +623,7 @@ function viewRecipe(id){
     ${pairs.length ? `<div class="marks">${pairs.map(p => `<span class="chip pair"><button data-a="viewRecipe" data-id="${p.id}">${esc(p.title)}</button><button class="x" data-a="unpair" data-id="${r.id}" data-o="${p.id}" aria-label="Unlink ${esc(p.title)}">✕</button></span>`).join('')}</div>`
       : '<p class="note">Link a seasoning, sauce, dressing or side that goes with this.</p>'}
     <div class="btns" style="margin-top:6px"><button class="btn sm" data-a="pairPick" data-id="${r.id}">+ Link a recipe</button></div>
+    ${versionsHtml(r)}
     ${nutritionSection(r)}
     ${nut ? `<details class="sub-d"><summary>What the website said</summary><p class="note">Copied from the website by Paprika. Not checked and sometimes wrong.</p>
       <div class="nut">${NUT.filter(([k]) => nut[k] != null).map(([k, l, u]) => `<div><b>${esc(nut[k])}${u}</b><span>${l}</span></div>`).join('')}</div></details>` : ''}
@@ -809,7 +890,7 @@ function viewFamilyMeal(id){
         : `<span class="note">${m.rsvp?.[h] == null ? 'not answered' : +m.rsvp[h] ? `${m.rsvp[h]} coming` : 'not coming'}</span>`}</div>`).join('')}
     <h3>Dishes</h3>
     ${(m.dishes || []).length ? (m.dishes || []).map(d => {
-      const r = recipeById(d.recipeId), flags = r ? checkRecipe(r.ingredients, people) : [];
+      const r = recipeById(d.recipeId), flags = r ? openFlags(checkRecipe(r.ingredients, people)) : [];
       return `<div class="mini"><span class="grow"><b ${r ? `data-a="viewRecipe" data-id="${r.id}" style="cursor:pointer"` : ''}>${esc(d.title)}</b> <span class="note">from ${esc(hhName(d.hid))}${d.servings ? ` · serves ${d.servings}` : ''}</span>
         ${flags.length ? `<br><small class="warntext">${flags.slice(0, 4).map(f => `${esc(f.person)}: ${esc(f.label)}`).join(' · ')}${flags.length > 4 ? ' …' : ''}</small>` : ''}</span>
         ${d.hid === S.hid ? `<button class="btn sm danger" data-a="fmDishDel" data-id="${m.id}" data-d="${d.id}" aria-label="Remove">✕</button>` : ''}</div>`; }).join('')
@@ -882,6 +963,7 @@ function drawShopList(){
     return `<div class="srow ${x.on ? '' : 'off'}"><input type="checkbox" data-a="srOn" data-n="${n}" ${x.on ? 'checked' : ''} aria-label="Include ${esc(x.name)}">
       <div class="grow"><input class="sname" value="${esc(x.name)}" data-a-change="srName" data-n="${n}" aria-label="Item name">
         <small>${esc(x.amountText || 'amount not given')} · ${esc(x.from.join(', '))}</small>
+        ${x.options?.length > 1 ? `<small>The recipe says any of these: <select data-a-change="srOpt" data-n="${n}" aria-label="Which one to buy">${[...new Set([x.name, ...x.options])].map(o => `<option ${o === x.name ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></small>` : ''}
         ${canSend ? `<small>${it ? `→ Shop: <b>${esc(it.name)}</b>${it.onList ? (it.ticked ? ' (ticked, will untick)' : ' (already on the list, adds a note)') : ''} <button class="link" data-a="srNew" data-n="${n}">make it a new item</button>`
           : `→ new Shop item in <select data-a-change="srCat" data-n="${n}" aria-label="Shop category">${(cats || [x.cat]).map(c => `<option ${c === x.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>`}</small>` : ''}</div></div>`;
   };
@@ -1196,6 +1278,22 @@ const A = {
     if (!sm){ toast("That reply doesn't have the steps in it"); return; }
     await saveSimple(r, sm); },
   pairPick: t => openPairPick(t.dataset.id),
+  swapAi: async t => {
+    const r = S.recipes.find(x => x.id === t.dataset.id), st = r && swapState(r.id); if (!r || st.busy) return;
+    const people = flagPeople(), flags = checkRecipe(r.ingredients, people);
+    st.busy = true; S.liveSheet?.();
+    try { st.ai = acceptAiSwaps(r, flags, people, await swapIdeas(aiSwapInput(r, flags))); }
+    catch (e){ console.error(e); toast(e.message || "Couldn't get swap ideas"); }
+    finally { st.busy = false; if (S.liveSheet?.rid === r.id) S.liveSheet(); } },
+  swapCopy: async t => {
+    const r = S.recipes.find(x => x.id === t.dataset.id); if (!r) return;
+    try { await navigator.clipboard.writeText(swapPrompt(aiSwapInput(r, checkRecipe(r.ingredients, flagPeople())))); toast('Prompt copied. Paste it into ChatGPT, Claude or Gemini, then paste the reply here.'); } catch { toast("Couldn't copy"); } },
+  swapUse: t => {
+    const r = S.recipes.find(x => x.id === t.dataset.id); if (!r) return;
+    const people = flagPeople(), got = acceptAiSwaps(r, checkRecipe(r.ingredients, people), people, cleanSwaps(parseLooseJson($('#swap_reply')?.value || '')));
+    if (!got.length){ toast('No swaps in that reply that suit everyone'); return; }
+    swapState(r.id).ai = got; S.liveSheet?.(); },
+  swapVersion: t => { const r = S.recipes.find(x => x.id === t.dataset.id); if (r) makeVersion(r); },
   pair: async t => {
     const a = t.dataset.id, b = t.dataset.o;
     try { const w = writeBatch(db); w.update(doc(db, 'rxRecipes', a), { pairs: arrayUnion(b) }); w.update(doc(db, 'rxRecipes', b), { pairs: arrayUnion(a) }); await w.commit();
@@ -1335,6 +1433,8 @@ const CH = {
   srName: t => { const x = S.shop.rows[+t.dataset.n]; x.name = t.value.trim() || x.name;
     const m = S.shop.items.length ? matchShop(x.name, S.shop.items) : null; x.matchId = m?.item.id || ''; x.cat = guessCategory(x.name, S.shop.cats); drawShopList(); },
   srCat: t => { S.shop.rows[+t.dataset.n].cat = t.value; },
+  srOpt: t => CH.srName(t),
+  swapPick: t => { const st = swapState(t.dataset.id); t.checked ? st.picks.add(t.dataset.k) : st.picks.delete(t.dataset.k); S.liveSheet?.(); },
 };
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-a]'); if (!t) return;

@@ -51,6 +51,29 @@ export const SIMPLIFY_SCHEMA = {
 };
 export const simplifyAsk = ({ title = '', ingredients = [], steps = [] }) => `Simplify the method of "${title}".\n\nINGREDIENTS:\n${ingredients.join('\n')}\n\nMETHOD:\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
 // for the no-key route
+// Swap ideas for what people need to avoid (the app and the server function ask the same; a test checks they match).
+// Only the ingredients and a plain list of things to avoid are sent: never names or health conditions.
+export const SWAP_INSTRUCTIONS = `You suggest ingredient swaps for a family recipe app in New Zealand.
+You are given a recipe's ingredients and a list of things some of the people eating it need to avoid or have less of.
+For each ingredient line that contains something on the list, suggest one swap that keeps the dish working, using ingredients that are easy to buy in a New Zealand supermarket.
+Give "ingredient" exactly as the line is written, and "swap" as the whole new line, with a sensible amount.
+Check that the swap contains nothing else on the list. Put a short tip in "tip" if the cooking needs to change, for example a different time or method; otherwise leave it empty.
+Leave out lines with no good swap. Do not mention medicines or doses, and do not give medical advice.`;
+export const SWAP_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['swaps'],
+  properties: {
+    swaps: { type: 'array', items: {
+      type: 'object', additionalProperties: false, required: ['ingredient', 'swap', 'tip'],
+      properties: {
+        ingredient: { type: 'string', description: 'the ingredient line exactly as given' },
+        swap: { type: 'string', description: 'the whole new ingredient line, with an amount' },
+        tip: { type: 'string', description: 'a short cooking tip for the swap; empty if none' },
+      },
+    } },
+  },
+};
+export const swapAsk = ({ title = '', ingredients = [], avoid = [] }) => `Suggest swaps for "${title}".\n\nAVOID OR HAVE LESS OF:\n${avoid.join('\n')}\n\nINGREDIENTS:\n${ingredients.join('\n')}`;
+export const swapPrompt = input => `${SWAP_INSTRUCTIONS}\n\nReply with only JSON in exactly this shape, nothing else:\n{"swaps": [{"ingredient": "...", "swap": "...", "tip": ""}]}\n\n${swapAsk(input)}`;
 export const simplifyPrompt = r => `${SIMPLIFY_INSTRUCTIONS}\n\nReply with only JSON in exactly this shape, nothing else:\n{"prep": ["..."], "phases": [{"heading": "...", "steps": ["..."]}]}\n\n${simplifyAsk(r)}`;
 
 const EXAMPLE = { found: true, title: '', servings: '', prepTime: '', cookTime: '', ingredients: ['...'], steps: ['...'], notes: '', categories: ['Dinner'], sourceName: '', unclear: [] };
@@ -88,6 +111,16 @@ export async function simplifySteps(r, a = getAi()){
   if (!s) throw new Error("The AI didn't send back a method.");
   return s;
 }
+
+// input: { title, ingredients: [line], avoid: [line] } → [{ ingredient, swap, tip }]
+export async function swapIdeas(input, a = getAi()){
+  if (!aiReady(a)) throw new Error('AI is not set up on this phone.');
+  const j = usingFamily(a) ? await family({ task: 'swaps', ...input }) : await ownAi(a, swapAsk(input), {}, SWAP_INSTRUCTIONS, SWAP_SCHEMA);
+  return cleanSwaps(j);
+}
+export const cleanSwaps = j => (Array.isArray(j?.swaps) ? j.swaps : [])
+  .map(s => ({ ingredient: String(s?.ingredient ?? '').trim(), swap: String(s?.swap ?? '').trim(), tip: String(s?.tip ?? '').trim() }))
+  .filter(s => s.ingredient && s.swap && s.swap.toLowerCase() !== s.ingredient.toLowerCase());
 
 const split = d => { const m = String(d).match(/^data:([^;]+);base64,(.*)$/); return m ? { type: m[1], data: m[2] } : null; };
 

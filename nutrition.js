@@ -59,14 +59,40 @@ export function parseLine(text){
 function finish(res){
   res.note = (res.item.match(/\(([^)]*)\)/g) || []).join(' ');
   // "/ 125 – 375 ml water", "/ ⅔ cup water": a second measure of the same thing
+  const orParen = (res.item.match(/\(\s*or\s+[^)]*\)/gi) || []).map(x => ' ' + x.slice(1, -1));   // "soy sauce (or tamari)"
   let it = res.item.replace(/\([^)]*\)/g, ' ').replace(new RegExp(`^\\s*\\/\\s*(${Q})?(\\s*[-–]\\s*${Q})?\\s*(ml|g|l|kg|cups?|tbsp|tsp|tablespoons?|teaspoons?)?\\b\\s*`, 'i'), ' ');
   // drop ", chopped" etc., but keep going if the first part is only describing words ("skinless, boneless chicken breasts")
+  res.options = optionsOf(it + orParen.join(''));
   const parts = it.split(/,|;| - | – /);
   it = parts.find(x => toks(x).some(t => !STOP.has(t) && !/^\d/.test(t))) || parts[0];
   it = it.replace(/\s+(or|\/)\s+.*$/i, '');                     // first of alternatives
   res.optional = OPTIONAL.test(res.text) && !/\bplus (extra|more)\b/i.test(res.text);
   res.item = it.replace(/\s{2,}/g, ' ').trim();
   return res;
+}
+
+/* ---------- "butter or olive oil": the choices in one ingredient line ---------- */
+// text is the item without its amount. Returns the choices (at least one), first as written.
+// Not choices: "fresh or frozen peas", "chopped or sliced", "salt, or to taste".
+// A shared last word is spread: "chicken or vegetable stock" → chicken stock, vegetable stock.
+const NOT_FOOD = new Set(('taste needed desired preferred similar more less required serve serving serves garnish frozen dried tinned canned ' +
+  'any your favourite favorite other kind type brand mild homemade store bought fine coarse ground whole').split(' '));
+const MODIFIER = new Set(('chicken beef vegetable veggie veg fish lamb pork mushroom white brown red green yellow black rice wine cider apple malt ' +
+  'plain wholemeal almond oat soy soya coconut cow light dark sweet smoked greek natural spring olive canola sesame peanut sunflower avocado ' +
+  'cheddar tasty parmesan mozzarella feta goat sheep lemon lime orange maple golden caster icing raw demerara corn maize gluten').split(' '));
+const realWords = s => (String(s).toLowerCase().match(/[a-zà-ÿ'-]+/g) || []).filter(w => !STOP.has(w) && !NOT_FOOD.has(w));
+export function optionsOf(text){
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  let opts = t.split(/\s*,?\s+(?:and\/or|or|either)\s+|\s+\/\s+|(?<=[a-z])\/(?=[a-z])/i)
+    .map(o => o.split(/,|;| - | – /).find(x => realWords(x).length || /\w/.test(x)) || '')
+    .map(o => o.replace(/^\s*either\s+/i, '').trim()).filter(Boolean);
+  if (opts.length < 2) return [t];
+  // spread the shared head: "chicken or vegetable stock", "soy or almond milk"
+  const last = opts[opts.length - 1].split(' ');
+  if (last.length > 1) opts = opts.map((o, i) => i < opts.length - 1 && o.split(' ').every(w => MODIFIER.has(w.toLowerCase())) ? `${o} ${last.slice(1).join(' ')}` : o);
+  opts = opts.filter(o => realWords(o).length);
+  const seen = new Set(); opts = opts.filter(o => { const k = o.toLowerCase(); return !seen.has(k) && seen.add(k); });
+  return opts.length > 1 ? opts : [t];
 }
 
 /* ---------- matching a food ---------- */

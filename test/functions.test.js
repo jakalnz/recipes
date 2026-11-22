@@ -1,9 +1,9 @@
 // The server function and the app must ask the AI the same thing and expect the same reply shape.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { INSTRUCTIONS as appInstr, SIMPLIFY_INSTRUCTIONS as appSimp, SIMPLIFY_SCHEMA as appSimpSchema, simplifyAsk as appAsk } from '../ai.js';
+import { INSTRUCTIONS as appInstr, SIMPLIFY_INSTRUCTIONS as appSimp, SIMPLIFY_SCHEMA as appSimpSchema, simplifyAsk as appAsk, SWAP_INSTRUCTIONS as appSwap, SWAP_SCHEMA as appSwapSchema, swapAsk as appSwapAsk, cleanSwaps } from '../ai.js';
 import { RECIPE_SCHEMA as appSchema } from '../jsonld.js';
-import { INSTRUCTIONS as fnInstr, RECIPE_SCHEMA as fnSchema, readRecipe, SIMPLIFY_INSTRUCTIONS as fnSimp, SIMPLIFY_SCHEMA as fnSimpSchema, simplifyAsk as fnAsk, simplifySteps } from '../functions/recipe-ai.js';
+import { INSTRUCTIONS as fnInstr, RECIPE_SCHEMA as fnSchema, readRecipe, SIMPLIFY_INSTRUCTIONS as fnSimp, SIMPLIFY_SCHEMA as fnSimpSchema, simplifyAsk as fnAsk, simplifySteps, SWAP_INSTRUCTIONS as fnSwap, SWAP_SCHEMA as fnSwapSchema, swapAsk as fnSwapAsk, swapIdeas } from '../functions/recipe-ai.js';
 
 test('app and server function use identical instructions and schema', () => {
   assert.equal(fnInstr, appInstr);
@@ -58,4 +58,18 @@ test('simplify request: ingredients and numbered steps in, prep and phases out, 
   assert.deepEqual(req.output_config.format.schema, fnSimpSchema);
   assert.match(req.messages[0].content[0].text, /INGREDIENTS:\n1 sheet pastry[\s\S]*1\. First, you will want/);
   assert.equal(req.tools, undefined);
+});
+
+test('swap ideas: app and function ask the same, and send no names', async () => {
+  assert.equal(fnSwap, appSwap);
+  assert.deepEqual(fnSwapSchema, appSwapSchema);
+  const input = { title: 'Pie', ingredients: ['50 g butter', '1 cup cream'], avoid: ['Milk (must avoid completely): butter, cream'] };
+  assert.equal(fnSwapAsk(input), appSwapAsk(input));
+  const reply = { swaps: [{ ingredient: '50 g butter', swap: '50 g dairy-free spread', tip: '' }] };
+  const c = fakeClient([{ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(reply) }], usage: { input_tokens: 9, output_tokens: 4 } }]);
+  const r = await swapIdeas(c, input);
+  assert.deepEqual(r.swaps, reply);
+  assert.equal(c.calls[0].tools, undefined);
+  assert.match(c.calls[0].messages[0].content[0].text, /AVOID OR HAVE LESS OF:\nMilk[\s\S]*INGREDIENTS:\n50 g butter/);
+  assert.deepEqual(cleanSwaps({ swaps: [{ ingredient: ' 50 g butter ', swap: '50 g butter' }, { ingredient: 'a', swap: 'b', tip: null }] }), [{ ingredient: 'a', swap: 'b', tip: '' }]);
 });
