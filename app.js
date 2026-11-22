@@ -23,6 +23,7 @@ import { metricRecipe } from './units.js';
 import { findRecipe, fromJsonLd, fromAi, parseLooseJson } from './jsonld.js';
 import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily, simplifySteps, simplifyPrompt } from './ai.js';
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
+import { cleanSimple, missingNumbers, highlight } from './simplify.js';
 import { makeIndex, computeRecipe, searchFoods, matchFood, parseLine } from './nutrition.js';
 import { MEALS, MEAL_LABEL, iso, fromIso, addDays, weekStart, weekDays, dayShort, dayLong, shoppingList, matchShop, guessCategory, DEFAULT_PANTRY, isPantry } from './planner.js';
 
@@ -58,6 +59,8 @@ const listIcons = r => { const l = myLists(r); return LISTS.filter(([k]) => l.in
 const famFavs = r => Object.values(r.lists || {}).filter(l => l.includes('fav')).length;
 // a short fingerprint of a method, to know when a simplified version is out of date
 const stepsKey = steps => { let h = 0; for (const c of (steps || []).join('\n')) h = (h * 31 + c.codePointAt(0)) | 0; return (h >>> 0).toString(36); };
+// what the AI is given to simplify: plain lines, as shown on the recipe
+const simpleInput = r => ({ title: r.title || '', ingredients: (r.ingredients || []).map(i => i.heading ? i.original + ':' : i.original), steps: r.steps || [] });
 // recipes linked as "goes well with", from either side
 const pairsOf = r => [...new Set([...(r.pairs || []), ...S.recipes.filter(x => (x.pairs || []).includes(r.id)).map(x => x.id)])]
   .map(id => S.recipes.find(x => x.id === id)).filter(Boolean).sort(byTitle);
@@ -453,13 +456,17 @@ function viewRecipe(id){
   const split = LS.get('split') === '1', pairs = pairsOf(r), lists = myLists(r), fams = famFavs(r);
   // method: as written, or the AI's simpler version (kept on the recipe for everyone)
   const simpleMode = LS.get('simple') === '1' && !orig, steps = r.steps || [];
-  const simpleOk = r.stepsSimple?.length && r.stepsSimpleOf === stepsKey(steps);
-  const ol = list => `<ol>${list.map(s => `<li style="margin-bottom:8px">${esc(s)}</li>`).join('')}</ol>`;
+  const simpleOk = r.simple?.phases?.length && r.simple.of === stepsKey(steps);
+  const ol = (list, start = 1) => `<ol${start > 1 ? ` start="${start}"` : ''}>${list.map(s => `<li style="margin-bottom:8px">${highlight(s)}</li>`).join('')}</ol>`;
+  const simpleHtml = sm => { let n = 1; const missing = missingNumbers(steps, sm);
+    return `${sm.prep.length ? `<h4 class="ph4">Before you start</h4><ul class="prep">${sm.prep.map(p => `<li>${highlight(p)}</li>`).join('')}</ul>` : ''}
+      ${sm.phases.map(p => { const h = `<h4 class="ph4">${esc(p.heading)}</h4>${ol(p.steps, n)}`; n += p.steps.length; return h; }).join('')}
+      ${missing.length ? `<p class="warnline">This version may have left out: <b>${missing.map(esc).join(', ')}</b>. Check “As written”.</p>` : ''}`; };
   const method = !steps.length ? '<p class="note">None yet.</p>'
     : !simpleMode ? ol(orig && r.stepsWas ? r.stepsWas : steps)
     : S.simplifying === id ? '<p class="note">Making a simpler version… this can take up to a minute.</p>'
-    : simpleOk ? `${ol(r.stepsSimple)}<p class="note">Shortened by AI${r.stepsSimpleBy ? ` for ${esc(r.stepsSimpleBy)}` : ''}. If anything looks wrong, check “As written”. <button class="link" data-a="simplify" data-id="${r.id}">Make it again</button></p>`
-    : `<p class="note">${r.stepsSimple?.length ? 'The method has been edited since the simple version was made.' : 'No simple version yet.'}</p>
+    : simpleOk ? `${simpleHtml(r.simple)}<p class="note">Shortened by AI${r.simple.by ? ` for ${esc(r.simple.by)}` : ''}. If anything looks wrong, check “As written”. <button class="link" data-a="simplify" data-id="${r.id}">Make it again</button></p>`
+    : `<p class="note">${r.simple ? 'The method has been edited since the simple version was made.' : r.stepsSimple ? 'There is a simple version in the older style. Make it again for the new layout: a prep list, short sections, and amounts in the steps.' : 'No simple version yet.'}</p>
       ${aiReady() ? `<div class="btns" style="margin-top:0"><button class="btn tag" data-a="simplify" data-id="${r.id}">Make a simple version</button></div>`
         : `<div class="btns" style="margin-top:0"><button class="btn" data-a="simpCopy" data-id="${r.id}">Copy prompt for a chatbot</button></div>
           <label>Paste the chatbot's reply<textarea id="simp_reply" rows="4"></textarea></label>
@@ -541,8 +548,10 @@ function drawPairList(){
     : '<li class="empty">No other recipes match.</li>';
 }
 
-async function saveSimple(r, steps){
-  try { await updateDoc(doc(db, 'rxRecipes', r.id), { stepsSimple: steps, stepsSimpleOf: stepsKey(r.steps), stepsSimpleBy: me().name }); toast('Simple method saved for everyone'); }
+async function saveSimple(r, sm){
+  try {
+    await updateDoc(doc(db, 'rxRecipes', r.id), { simple: { ...sm, of: stepsKey(r.steps), by: me().name }, stepsSimple: deleteField(), stepsSimpleOf: deleteField(), stepsSimpleBy: deleteField() });
+    toast('Simple method saved for everyone'); }
   catch (e){ console.error(e); toast("Couldn't save the simple method"); }
 }
 
@@ -1151,18 +1160,17 @@ const A = {
   simplify: async t => {
     const r = S.recipes.find(x => x.id === t.dataset.id); if (!r || S.simplifying) return;
     S.simplifying = r.id; viewRecipe(r.id);
-    try { await saveSimple(r, await simplifySteps(r)); }
+    try { await saveSimple(r, await simplifySteps(simpleInput(r))); }
     catch (e){ console.error(e); toast(e.message || "Couldn't simplify the method"); }
     finally { S.simplifying = null; if (S.liveSheet?.rid === r.id) S.liveSheet(); } },
   simpCopy: async t => {
     const r = S.recipes.find(x => x.id === t.dataset.id); if (!r) return;
-    try { await navigator.clipboard.writeText(simplifyPrompt(r)); toast('Prompt copied. Paste it into ChatGPT, Claude or Gemini, then paste the reply here.'); } catch { toast("Couldn't copy"); } },
+    try { await navigator.clipboard.writeText(simplifyPrompt(simpleInput(r))); toast('Prompt copied. Paste it into ChatGPT, Claude or Gemini, then paste the reply here.'); } catch { toast("Couldn't copy"); } },
   simpUse: async t => {
     const r = S.recipes.find(x => x.id === t.dataset.id); if (!r) return;
-    const j = parseLooseJson($('#simp_reply')?.value || '');
-    const steps = Array.isArray(j?.steps) ? j.steps.map(s => String(s).replace(/^\s*\d+[.)]\s*/, '').trim()).filter(Boolean) : [];
-    if (!steps.length){ toast("That reply doesn't have the steps in it"); return; }
-    await saveSimple(r, steps); },
+    const sm = cleanSimple(parseLooseJson($('#simp_reply')?.value || ''));
+    if (!sm){ toast("That reply doesn't have the steps in it"); return; }
+    await saveSimple(r, sm); },
   pairPick: t => openPairPick(t.dataset.id),
   pair: async t => {
     const a = t.dataset.id, b = t.dataset.o;

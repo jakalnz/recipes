@@ -3,6 +3,7 @@
 //   or no key at all: copy a prompt into any chatbot and paste its reply back.
 // Settings live on this phone only (localStorage "rx.ai").
 import { RECIPE_SCHEMA, parseLooseJson } from './jsonld.js';
+import { cleanSimple } from './simplify.js';
 
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.4.0/+esm';
 export const CLAUDE_MODELS = [['claude-opus-5-5', 'Claude Opus 5.5 (best, a few cents a recipe)'], ['claude-haiku-5-5', 'Claude Haiku 5.5 (much cheaper)']];
@@ -27,20 +28,32 @@ Put each method step in its own item, without numbers.
 If a photo is of a handwritten card or a page that is hard to read, give your best reading and list anything you are unsure of in "unclear".
 If there is no recipe, set "found" to false and leave the other fields empty.`;
 
-// Shortening a wordy method (the server function asks the same, checked by a test).
-export const SIMPLIFY_INSTRUCTIONS = `You rewrite the method of a recipe so it is quick to follow while cooking, for a family recipe app in New Zealand.
-Keep every step that matters, in the same order. Keep every quantity, temperature, time, tin or dish size and doneness cue exactly as written, for example "180°C", "20 minutes" or "until golden".
-Cut stories, chatty or repeated wording, and explanations of why. Use short, plain sentences that start with the action. Put one action, or a few closely linked actions, in each step.
-Never add steps, ingredients, amounts or advice that are not in the original. Give the steps without numbers.`;
+// Shortening a wordy method (the app and the server function ask the same; a test checks they match).
+// Shape follows research on written instructions: prep first, short labelled phases, amounts in the steps.
+export const SIMPLIFY_INSTRUCTIONS = `You rewrite a recipe's method so it is quick to follow while cooking, for a family recipe app in New Zealand.
+Put jobs that can be done before cooking starts in "prep" as short items: heating the oven, greasing or lining tins, chopping, measuring, draining, softening. Only include jobs this recipe needs.
+Group the remaining steps, in order, into a few phases, each with a heading of two to four words, such as "Make the sauce" or "Bake".
+Start each step with the action. Put one action, or a few closely linked actions, in each step.
+When a step uses an ingredient, include its amount from the ingredient list, for example "Add the 2 tbsp burrito seasoning". If the recipe splits an ingredient across steps, give only the part used in that step.
+Keep every temperature, time, tin or dish size and doneness cue exactly as written, for example "180°C", "20 minutes" or "until golden".
+If a step can be done while something else cooks, start it with "While".
+Cut stories, chatty or repeated wording, and explanations of why. Use short, plain sentences.
+Never add steps, ingredients, amounts or advice that are not in the recipe. Give the steps without numbers.`;
 export const SIMPLIFY_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['steps'],
-  properties: { steps: { type: 'array', items: { type: 'string' }, description: 'the simplified steps in order, without numbering' } },
+  type: 'object', additionalProperties: false, required: ['prep', 'phases'],
+  properties: {
+    prep: { type: 'array', items: { type: 'string' }, description: 'jobs to do before cooking starts; empty if none' },
+    phases: { type: 'array', description: 'the method in order, in a few short phases', items: {
+      type: 'object', additionalProperties: false, required: ['heading', 'steps'],
+      properties: { heading: { type: 'string', description: 'two to four words' }, steps: { type: 'array', items: { type: 'string' }, description: 'steps without numbering' } },
+    } },
+  },
 };
-export const simplifyAsk = ({ title = '', steps = [] }) => `Simplify the method of "${title}":\n\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
+export const simplifyAsk = ({ title = '', ingredients = [], steps = [] }) => `Simplify the method of "${title}".\n\nINGREDIENTS:\n${ingredients.join('\n')}\n\nMETHOD:\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
 // for the no-key route
-export const simplifyPrompt = r => `${SIMPLIFY_INSTRUCTIONS}\n\nReply with only JSON in exactly this shape, nothing else:\n{"steps": ["..."]}\n\n${simplifyAsk(r)}`;
+export const simplifyPrompt = r => `${SIMPLIFY_INSTRUCTIONS}\n\nReply with only JSON in exactly this shape, nothing else:\n{"prep": ["..."], "phases": [{"heading": "...", "steps": ["..."]}]}\n\n${simplifyAsk(r)}`;
 
-const EXAMPLE ={ found: true, title: '', servings: '', prepTime: '', cookTime: '', ingredients: ['...'], steps: ['...'], notes: '', categories: ['Dinner'], sourceName: '', unclear: [] };
+const EXAMPLE = { found: true, title: '', servings: '', prepTime: '', cookTime: '', ingredients: ['...'], steps: ['...'], notes: '', categories: ['Dinner'], sourceName: '', unclear: [] };
 // for the no-key route: paste into ChatGPT, Gemini, Claude, Copilot …
 export function copyPrompt(kind, { url = '', text = '' } = {}){
   const what = kind === 'photo' ? 'the recipe in the photo(s) I have attached'
@@ -65,13 +78,15 @@ function ownAi(a, ask, input, system, schema){
   throw new Error('Unknown AI provider');
 }
 
-// a shorter, plainer method: { title, steps } → [steps]
+// a shorter, plainer method: { title, ingredients: [line], steps: [line] } → { prep, phases }
 export async function simplifySteps(r, a = getAi()){
   if (!aiReady(a)) throw new Error('AI is not set up on this phone.');
-  const j = usingFamily(a) ? await family({ task: 'simplify', title: r.title || '', steps: r.steps })
-    : await ownAi(a, simplifyAsk(r), {}, SIMPLIFY_INSTRUCTIONS, SIMPLIFY_SCHEMA);
-  if (!Array.isArray(j?.steps) || !j.steps.length) throw new Error("The AI didn't send back a method.");
-  return j.steps.map(s => String(s).replace(/^\s*\d+[.)]\s*/, '').trim()).filter(Boolean);
+  const input = { title: r.title || '', ingredients: r.ingredients || [], steps: r.steps || [] };
+  const j = usingFamily(a) ? await family({ task: 'simplify', ...input })
+    : await ownAi(a, simplifyAsk(input), {}, SIMPLIFY_INSTRUCTIONS, SIMPLIFY_SCHEMA);
+  const s = cleanSimple(j);
+  if (!s) throw new Error("The AI didn't send back a method.");
+  return s;
 }
 
 const split = d => { const m = String(d).match(/^data:([^;]+);base64,(.*)$/); return m ? { type: m[1], data: m[2] } : null; };
@@ -131,7 +146,7 @@ async function gemini(a, ask, input, system, schema){
   const parts = [{ text: ask }, ...(input.images || []).map(split).filter(Boolean).map(img => ({ inline_data: { mime_type: img.type, data: img.data } }))];
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(a.model)}:generateContent`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': a.key },
-    body: JSON.stringify({ systemInstruction: { parts: [{ text: system + (schema === RECIPE_SCHEMA ? '' : '\nReply with only JSON like {"steps": ["..."]}.') }] }, contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json' } }),
+    body: JSON.stringify({ systemInstruction: { parts: [{ text: system + (schema === RECIPE_SCHEMA ? '' : '\nReply with only JSON like {"prep": ["..."], "phases": [{"heading": "...", "steps": ["..."]}]}.') }] }, contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json' } }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(r.status === 400 || r.status === 403 ? `Gemini didn't accept the key or model: ${j.error?.message || ''}` : `Gemini error ${r.status}`);

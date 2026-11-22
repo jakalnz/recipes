@@ -23,16 +23,28 @@ export const RECIPE_SCHEMA = {
   },
 };
 
-// Shortening a wordy method (same as the app's ai.js, checked by a test).
-export const SIMPLIFY_INSTRUCTIONS = `You rewrite the method of a recipe so it is quick to follow while cooking, for a family recipe app in New Zealand.
-Keep every step that matters, in the same order. Keep every quantity, temperature, time, tin or dish size and doneness cue exactly as written, for example "180°C", "20 minutes" or "until golden".
-Cut stories, chatty or repeated wording, and explanations of why. Use short, plain sentences that start with the action. Put one action, or a few closely linked actions, in each step.
-Never add steps, ingredients, amounts or advice that are not in the original. Give the steps without numbers.`;
+// Shortening a wordy method (the app and the server function ask the same; a test checks they match).
+// Shape follows research on written instructions: prep first, short labelled phases, amounts in the steps.
+export const SIMPLIFY_INSTRUCTIONS = `You rewrite a recipe's method so it is quick to follow while cooking, for a family recipe app in New Zealand.
+Put jobs that can be done before cooking starts in "prep" as short items: heating the oven, greasing or lining tins, chopping, measuring, draining, softening. Only include jobs this recipe needs.
+Group the remaining steps, in order, into a few phases, each with a heading of two to four words, such as "Make the sauce" or "Bake".
+Start each step with the action. Put one action, or a few closely linked actions, in each step.
+When a step uses an ingredient, include its amount from the ingredient list, for example "Add the 2 tbsp burrito seasoning". If the recipe splits an ingredient across steps, give only the part used in that step.
+Keep every temperature, time, tin or dish size and doneness cue exactly as written, for example "180°C", "20 minutes" or "until golden".
+If a step can be done while something else cooks, start it with "While".
+Cut stories, chatty or repeated wording, and explanations of why. Use short, plain sentences.
+Never add steps, ingredients, amounts or advice that are not in the recipe. Give the steps without numbers.`;
 export const SIMPLIFY_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['steps'],
-  properties: { steps: { type: 'array', items: { type: 'string' }, description: 'the simplified steps in order, without numbering' } },
+  type: 'object', additionalProperties: false, required: ['prep', 'phases'],
+  properties: {
+    prep: { type: 'array', items: { type: 'string' }, description: 'jobs to do before cooking starts; empty if none' },
+    phases: { type: 'array', description: 'the method in order, in a few short phases', items: {
+      type: 'object', additionalProperties: false, required: ['heading', 'steps'],
+      properties: { heading: { type: 'string', description: 'two to four words' }, steps: { type: 'array', items: { type: 'string' }, description: 'steps without numbering' } },
+    } },
+  },
 };
-export const simplifyAsk = ({ title = '', steps = [] }) => `Simplify the method of "${title}":\n\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
+export const simplifyAsk = ({ title = '', ingredients = [], steps = [] }) => `Simplify the method of "${title}".\n\nINGREDIENTS:\n${ingredients.join('\n')}\n\nMETHOD:\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
 
 export const MODEL = 'claude-opus-5-5';
 
@@ -45,10 +57,10 @@ export async function readRecipe(client, input){
   const r = await run(client, INSTRUCTIONS, RECIPE_SCHEMA, [...images, { type: 'text', text: ask }], input.url ? [{ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 3 }] : null);
   return r.json ? { recipe: r.json, usage: r.usage } : r;
 }
-// input: { title, steps: [string] } → { steps: [string] }
+// input: { title, ingredients: [string], steps: [string] } → { simple: { prep, phases } }
 export async function simplifySteps(client, input){
   const r = await run(client, SIMPLIFY_INSTRUCTIONS, SIMPLIFY_SCHEMA, [{ type: 'text', text: simplifyAsk(input) }]);
-  return r.json ? { steps: r.json.steps, usage: r.usage } : r;
+  return r.json ? { simple: r.json, usage: r.usage } : r;
 }
 
 async function run(client, system, schema, content, tools){

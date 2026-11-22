@@ -10,7 +10,7 @@ test('app and server function use identical instructions and schema', () => {
   assert.deepEqual(fnSchema, appSchema);
   assert.equal(fnSimp, appSimp);
   assert.deepEqual(fnSimpSchema, appSimpSchema);
-  const r = { title: 'Pie', steps: ['Heat the oven to 180°C.', 'Bake.'] };
+  const r = { title: 'Pie', ingredients: ['1 sheet pastry'], steps: ['Heat the oven to 180°C.', 'Bake.'] };
   assert.equal(fnAsk(r), appAsk(r));
 });
 
@@ -47,14 +47,15 @@ test('refusals are reported, not thrown as parse errors', async () => {
   const c = fakeClient([{ stop_reason: 'refusal', content: [] }]);
   assert.deepEqual(await readRecipe(c, { text: 'x' }), { error: 'refused' });
 });
-test('simplify request: numbered steps in, steps out, no tools', async () => {
-  const c = fakeClient([{ stop_reason: 'end_turn', content: [{ type: 'text', text: '{"steps":["Heat oven to 180°C.","Bake 20 minutes."]}' }], usage: { input_tokens: 9, output_tokens: 4 } }]);
-  const r = await simplifySteps(c, { title: 'Pie', steps: ['First, you will want to heat your oven to 180°C, which is important.', 'Bake it for 20 minutes.'] });
-  assert.deepEqual(r.steps, ['Heat oven to 180°C.', 'Bake 20 minutes.']);
+test('simplify request: ingredients and numbered steps in, prep and phases out, no tools', async () => {
+  const reply = { prep: ['Heat oven to 180°C.'], phases: [{ heading: 'Bake', steps: ['Bake 20 minutes.'] }] };
+  const c = fakeClient([{ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(reply) }], usage: { input_tokens: 9, output_tokens: 4 } }]);
+  const r = await simplifySteps(c, { title: 'Pie', ingredients: ['1 sheet pastry'], steps: ['First, you will want to heat your oven to 180°C, which is important.', 'Bake it for 20 minutes.'] });
+  assert.deepEqual(r.simple, reply);
   assert.deepEqual(r.usage, { input: 9, output: 4 });
   const req = c.calls[0];
   assert.equal(req.system, fnSimp);
   assert.deepEqual(req.output_config.format.schema, fnSimpSchema);
-  assert.match(req.messages[0].content[0].text, /1\. First, you will want/);
+  assert.match(req.messages[0].content[0].text, /INGREDIENTS:\n1 sheet pastry[\s\S]*1\. First, you will want/);
   assert.equal(req.tools, undefined);
 });

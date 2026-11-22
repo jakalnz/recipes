@@ -22,9 +22,10 @@ export const readRecipe = onCall({ region: 'australia-southeast1', secrets: [KEY
   if (!ai.enabled) throw new HttpsError('failed-precondition', 'The family AI is switched off.');
 
   // check the input before spending anything
-  const { task = 'read', images = [], text = '', url = '', title = '', steps = [] } = req.data || {};
+  const { task = 'read', images = [], text = '', url = '', title = '', steps = [], ingredients = [] } = req.data || {};
   if (task === 'simplify'){
-    if (!Array.isArray(steps) || !steps.length || steps.length > 80 || steps.some(s => typeof s !== 'string') || steps.join('').length > 30_000 || typeof title !== 'string' || title.length > 300)
+    const lines = l => Array.isArray(l) && l.length <= 150 && l.every(s => typeof s === 'string') && l.join('').length <= 30_000;
+    if (!lines(steps) || !steps.length || !lines(ingredients) || typeof title !== 'string' || title.length > 300)
       throw new HttpsError('invalid-argument', 'That method is empty or too long to simplify.');
   } else if (task !== 'read') throw new HttpsError('invalid-argument', 'Unknown job.');
   else if (!Array.isArray(images) || images.length > 4 || images.some(i => typeof i !== 'string' || i.length > 3_000_000)) throw new HttpsError('invalid-argument', 'Up to 4 photos, each under about 2 MB.');
@@ -45,13 +46,13 @@ export const readRecipe = onCall({ region: 'australia-southeast1', secrets: [KEY
 
   const client = new Anthropic({ apiKey: KEY.value() });
   try {
-    const r = task === 'simplify' ? await simplifySteps(client, { title, steps }) : await read(client, { images, text, url });
+    const r = task === 'simplify' ? await simplifySteps(client, { title, ingredients, steps }) : await read(client, { images, text, url });
     if (r.usage) await ref.set({ tokens: { input: FieldValue.increment(r.usage.input), output: FieldValue.increment(r.usage.output) } }, { merge: true });
     if (r.error === 'refused') throw new HttpsError('failed-precondition', 'The AI declined to read this one. Try Copy prompt instead.');
     if (r.error === 'too-long') throw new HttpsError('failed-precondition', 'The recipe was too long to read in one go.');
     if (r.error === 'fetch') throw new HttpsError('failed-precondition', `Couldn't open that page (${r.code}). Try the browser button instead.`);
     if (r.error) throw new HttpsError('deadline-exceeded', 'The AI took too long. Try again.');
-    return task === 'simplify' ? { steps: r.steps } : r.recipe;
+    return task === 'simplify' ? r.simple : r.recipe;
   } catch (e){
     if (e instanceof HttpsError) throw e;
     console.error(e);
