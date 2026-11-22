@@ -121,6 +121,59 @@ export function convertTemps(text){
     .replace(/(\d+)\s*(?:degrees?\s*C(?:elsius)?\b|º\s*C\b|C\b(?=[\s.,;)]|$))/g, (m, a) => /^\d+\s*C$/.test(m) && +a < 30 ? m : `${a}°C`);
 }
 
+/* ---------- scaling a recipe: ½×, 2×, 3× ---------- */
+// 1.5 → "1½", 0.33 → "⅓", 2.1 → "2"; to the nearest kitchen fraction
+const NICE = [[0, ''], [1 / 8, '⅛'], [1 / 4, '¼'], [1 / 3, '⅓'], [1 / 2, '½'], [2 / 3, '⅔'], [3 / 4, '¾'], [1, '']];
+export function niceQty(v){
+  if (v > 0 && v < 0.1) return String(Math.round(v * 100) / 100);
+  let w = Math.floor(v), f = v - w;
+  const [x, s] = NICE.reduce((b, c) => Math.abs(c[0] - f) < Math.abs(b[0] - f) ? c : b);
+  if (x === 1) w += 1;
+  if (w >= 10 && s) return String(Math.round(v));   // "12½ eggs" is silly; "12" will do
+  return w ? `${w}${s}` : s || '0';
+}
+const roundMetric = v => v < 20 ? Math.round(v * 2) / 2 : v < 400 ? Math.round(v / 5) * 5 : Math.round(v / 25) * 25;
+const dp1 = v => String(Math.round(v * 100) / 100);
+// words after a number that change between one and several
+const COUNT = ['cup', 'can', 'tin', 'clove', 'egg', 'slice', 'sheet', 'packet', 'jar', 'bag', 'tub', 'sprig', 'stalk', 'stick', 'handful', 'rasher', 'fillet',
+  'breast', 'thigh', 'drumstick', 'onion', 'carrot', 'lemon', 'lime', 'apple', 'banana', 'courgette', 'zucchini', 'capsicum', 'chilli', 'sausage', 'block', 'bottle', 'carton'];
+const COUNT_ES = { bunch: 'bunches', pinch: 'pinches', potato: 'potatoes', tomato: 'tomatoes', box: 'boxes', dash: 'dashes' };
+function countWord(w, n){
+  const lw = w.toLowerCase();
+  const one = COUNT_ES[lw] ? lw : Object.entries(COUNT_ES).find(([, p]) => p === lw)?.[0] || (COUNT.includes(lw.replace(/s$/, '')) ? lw.replace(/s$/, '') : null);
+  if (!one) return w;
+  const out = n > 1 ? COUNT_ES[one] || one + 's' : one;
+  return w[0] === w[0].toUpperCase() ? out[0].toUpperCase() + out.slice(1) : out;
+}
+// one amount with its unit: "1½ cup" ×2 → "3 cups", "600 g" ×2 → "1.2 kg"
+function scaleAmount(q, unit, k){
+  const v = q * k, u = (unit || '').toLowerCase().replace(/\.$/, '');
+  if (/^(g|grams?)$/.test(u)) return v >= 1000 ? `${dp1(v / 1000)} kg` : `${roundMetric(v)} ${unit}`;
+  if (/^(ml|millilitres?|milliliters?)$/.test(u)) return v >= 1000 ? `${dp1(v / 1000)} L` : `${roundMetric(v)} ${unit}`;
+  if (/^(kg|l|litres?|liters?)$/.test(u)) return v < 1 ? `${roundMetric(v * 1000)} ${u === 'kg' ? 'g' : 'ml'}` : `${dp1(v)} ${unit}`;
+  return `${niceQty(v)}${unit ? ' ' + countWord(unit, v) : ''}`;
+}
+// Scale the amount at the start of an ingredient line ("2-3 cloves", "Juice of 1 lemon",
+// "125 ml / ½ cup milk"). A size per can or packet in brackets stays as it is: "1 can (400 g)" ×2 → "2 cans (400 g)".
+export function scaleLine(text, k){
+  const s = String(text ?? '');
+  if (!k || k === 1) return s;
+  const AMT = `(${N})(?:\\s*(?:-|–|to)\\s*(${N}))?((\\s*)([a-zA-Z]+\\.?)(?![a-zA-Z]))?`;
+  const m = s.match(new RegExp(`^(\\s*(?:[a-zA-Z][a-zA-Z ,]*?\\bof\\s+)?)${AMT}`));
+  if (!m) return s;
+  const word = m[6] || '';
+  // the word is a unit when it's a measure or a counted thing ("2 cans"); otherwise it stays in the rest ("2 large eggs")
+  const isUnit = !!word && (/^(g|grams?|kg|ml|l|litres?|liters?|cups?|tbsp|tsp|tablespoons?|teaspoons?|x)\.?$/i.test(word) || countWord(word, 2) !== word || countWord(word, 1) !== word);
+  const unit = isUnit ? word : '';
+  const hi = m[3] != null ? scaleAmount(num(m[3]), unit, k) : null;
+  const head = hi ? `${scaleAmount(num(m[2]), unit, k).replace(/\s.*$/, '')}–${hi}` : scaleAmount(num(m[2]), unit, k);
+  let rest = s.slice(m[0].length - (isUnit ? 0 : (m[4] || '').length));
+  // a second measure of the same thing: "125 ml / ½ cup milk"
+  const alt = rest.match(/^(\s*\/\s*)/);
+  if (alt && new RegExp(`^${N}`).test(rest.slice(alt[1].length))) rest = alt[1] + scaleLine(rest.slice(alt[1].length), k);
+  return m[1] + head + rest;
+}
+
 // Convert a recipe's ingredients and steps; returns the changed fields (originals kept in `was`).
 export function metricRecipe(r){
   let changed = false;

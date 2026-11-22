@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toMetric, convertTemps, num, metricRecipe } from '../units.js';
+import { toMetric, convertTemps, num, metricRecipe, scaleLine, niceQty } from '../units.js';
 
 const cases = [
   // both units given: keep the metric
@@ -92,4 +92,24 @@ test('metricRecipe keeps originals and is safe to run twice', () => {
   const b = metricRecipe({ ...r, ...a });
   assert.deepEqual(b.ingredients, a.ingredients);
   assert.deepEqual(b.steps, a.steps);
+});
+
+test('scaling: halves, doubles and triples read like a recipe', () => {
+  const t = (l, k, want) => assert.equal(scaleLine(l, k), want, `${l} x${k}`);
+  t('1½ cups milk', 2, '3 cups milk');
+  t('1½ cups milk', 0.5, '¾ cup milk');
+  t('1 can (400 g) chickpeas', 2, '2 cans (400 g) chickpeas');
+  t('500 g mince', 2, '1 kg mince');
+  t('750 ml stock', 3, '2.25 L stock');
+  t('1 L milk', 0.5, '500 ml milk');
+  t('2-3 cloves garlic', 2, '4–6 cloves garlic');
+  t('Juice of 1 lemon', 2, 'Juice of 2 lemons');
+  t('125 ml / ½ cup water', 2, '250 ml / 1 cup water');
+  t('1 onion, diced', 3, '3 onions, diced');
+  t('2 large eggs', 3, '6 large eggs');
+  t('1 pinch salt', 2, '2 pinches salt');
+  t('Salt and pepper', 2, 'Salt and pepper');
+  t('2 tbsp soy sauce', 1, '2 tbsp soy sauce');
+  assert.equal(niceQty(0.33), '⅓');
+  assert.equal(niceQty(2.5), '2½');
 });

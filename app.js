@@ -19,7 +19,7 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { PRESETS, LEVELS, presetById, checkRecipe, itemActive, openFlags, swapLine, avoidList, suitsAll } from './diet.js';
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
-import { metricRecipe } from './units.js';
+import { metricRecipe, scaleLine, niceQty } from './units.js';
 import { findRecipe, fromJsonLd, fromAi, parseLooseJson } from './jsonld.js';
 import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily, simplifySteps, simplifyPrompt, swapIdeas, swapPrompt, cleanSwaps } from './ai.js';
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
@@ -59,7 +59,7 @@ const starText = n => n ? '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.ro
 const S = {
   user: null, access: null, hid: '', recipes: [], people: [], members: {}, photos: {}, importList: null,
   week: weekStart(new Date()), days: {}, familyMeals: [], household: {}, unsubWeek: null,
-  tab: LS.get('tab') || 'recipes', liveSheet: null, editPerson: null,
+  tab: LS.get('tab') || 'recipes', scales: {}, liveSheet: null, editPerson: null,
 };
 const me = () => ({ uid: S.user.uid, name: (S.user.displayName || S.user.email || '?').split(/[ @]/)[0] });
 // personal lists, kept per person on each recipe (recipe.lists[uid])
@@ -408,6 +408,11 @@ async function savePerson(){
   } catch (e){ console.error(e); toast("Couldn't save. Only people in their household can change this."); }
 }
 
+/* ---------- making more or less: ½×, 2×, 3× (for this visit; not saved) ---------- */
+const SCALES = [0.5, 1, 1.5, 2, 3];
+const scaleOf = id => S.scales?.[id] || 1;
+const scaleName = k => `${niceQty(k)}×`;
+
 /* ---------- swap ideas and versions ---------- */
 const flagPeople = () => (LS.get('flagScope') || 'mine') === 'all' ? S.people : myPeople();
 const swapState = rid => (S.swaps?.rid === rid ? S.swaps : (S.swaps = { rid, picks: new Set(), ai: null, busy: false }));
@@ -580,7 +585,8 @@ function viewRecipe(id){
           <div class="btns" style="margin-top:6px"><button class="btn tag" data-a="simpUse" data-id="${r.id}">Use this reply</button></div>`}`;
   // an ingredient that is one of the linked recipes gets a link to it
   const linkFor = text => { const t = text.toLowerCase(); return pairs.find(p => { const n = p.title.toLowerCase().replace(/^(home-?made|easy|quick|simple|best|basic|my|the)\s+/, '').trim(); return n.length > 2 && t.includes(n); }); };
-  const ing = i => { const text = orig && i.was ? i.was : i.original, p = linkFor(text);
+  const k = scaleOf(r.id);
+  const ing = i => { const text = scaleLine(orig && i.was ? i.was : i.original, k), p = linkFor(text);
     return `<li>${esc(text)}${p ? ` <button class="link" data-a="viewRecipe" data-id="${p.id}">recipe →</button>` : ''}</li>`; };
   const heroSrc = cid ? photoData(cid) : r.photoUrl || '';
   const hero = cid || r.photoUrl ? `<img class="hero" ${cid ? `data-pid="${esc(cid)}"` : ''} ${heroSrc ? `src="${esc(heroSrc)}"` : ''} alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
@@ -595,7 +601,7 @@ function viewRecipe(id){
   openSheet(`${hero}<h2>${esc(r.title)}</h2>
     <div class="sub">${(r.cats || []).map(c => `<span class="pill plain">${esc(c)}</span>`).join('')}
       ${(r.tags || []).map(c => `<span class="pill plain">#${esc(c)}</span>`).join('')}
-      ${r.servings ? `<span>Serves ${esc(r.servingsText && /\d\s*[-–]\s*\d/.test(r.servingsText) ? r.servingsText.replace(/^\D+/, '') : r.servings)}</span>` : ''}
+      ${r.servings ? `<span>Serves ${k !== 1 ? `${niceQty(r.servings * k)} (${scaleName(k)})` : esc(r.servingsText && /\d\s*[-–]\s*\d/.test(r.servingsText) ? r.servingsText.replace(/^\D+/, '') : r.servings)}</span>` : ''}
       ${times.map(t => `<span>${esc(t)}</span>`).join('')}
       ${r.createdBy ? `<span>Added by ${esc(r.createdBy.name)}${r.imported?.from ? ` from ${esc(r.imported.from)}` : ''}</span>` : ''}
       ${host ? `<a href="${esc(r.source.url)}" target="_blank" rel="noopener">${esc(host)}</a>` : ''}</div>
@@ -612,6 +618,8 @@ function viewRecipe(id){
       ${steps.length ? `<span class="seg" role="group" aria-label="Method"><button class="btn sm ${simpleMode ? '' : 'pri'}" data-a="stepMode" data-m="full">As written</button><button class="btn sm ${simpleMode ? 'pri' : ''}" data-a="stepMode" data-m="simple">Simple</button></span>` : ''}</div>
     <div class="cols${split ? ' on' : ''}"><section class="ci">
       <h3>Ingredients</h3>
+      <div class="seg scale" role="group" aria-label="Make more or less">${SCALES.map(x => `<button class="btn sm ${x === k ? 'pri' : ''}" data-a="scaleBy" data-id="${r.id}" data-k="${x}" aria-pressed="${x === k}">${scaleName(x)}</button>`).join('')}</div>
+      ${k !== 1 ? `<p class="note">Amounts are for ${k < 1 ? 'half' : scaleName(k)} the recipe. The method isn't changed, so check tin sizes and cooking times.</p>` : ''}
       ${conv ? `<p class="note">${orig ? 'Showing the original wording.' : 'Converted to metric.'} <button class="link" data-a="toggleOrig" data-id="${r.id}">${orig ? 'Show metric' : 'Show original'}</button></p>` : ''}
       ${(r.ingredients || []).length ? `<ul class="ings">${r.ingredients.map(i => i.heading ? `<li class="ih">${esc(i.original)}</li>` : ing(i)).join('')}</ul>` : '<p class="note">None yet.</p>'}
     </section><section class="cm">
@@ -815,7 +823,7 @@ function openPlanAdd({ date, recipeId } = {}){
       <label>Meal<select id="pa_meal">${MEALS.map(m => `<option value="${m}" ${m === 'dinner' ? 'selected' : ''}>${MEAL_LABEL[m]}</option>`).join('')}</select></label></div>
     ${r ? `<p><b>${esc(r.title)}</b></p>` : `<label>Recipe<input id="pa_q" placeholder="Search family recipes" autocomplete="off"></label><div id="pa_list" class="pick"></div>
       <label>…or just write something<input id="pa_text" placeholder="e.g. Fish and chips, Out for dinner"></label>`}
-    <div class="grid2"><label>Serves<input id="pa_serves" type="number" min="1" inputmode="numeric" value="${esc(r?.servings || S.household.serves || 4)}"></label>
+    <div class="grid2"><label>Serves<input id="pa_serves" type="number" min="1" inputmode="numeric" value="${esc(r?.servings ? Math.max(1, Math.round(r.servings * scaleOf(r.id))) : S.household.serves || 4)}"></label>
       <label class="cb" style="margin-top:34px"><input type="checkbox" id="pa_left"> Leftovers (nothing to buy)</label></div>
     <label>Note<input id="pa_note" placeholder="optional"></label>
     <div class="btns"><button class="btn pri" data-a="paSave">Add</button><button class="btn" data-a="closeSheet">Cancel</button></div>`);
@@ -1261,6 +1269,7 @@ const A = {
     const l = had.includes(k) ? had.filter(x => x !== k) : [...had.filter(x => !(k !== 'try' && x === 'try')), k];
     try { await updateDoc(doc(db, 'rxRecipes', r.id), new FieldPath('lists', S.user.uid), l.length ? l : deleteField()); }
     catch (e){ console.error(e); toast("Couldn't save that"); } },
+  scaleBy: t => { S.scales[t.dataset.id] = +t.dataset.k; if (S.liveSheet) S.liveSheet(); },
   splitView: t => { LS.set('split', LS.get('split') === '1' ? '0' : '1'); if (S.liveSheet) S.liveSheet(); },
   stepMode: t => { LS.set('simple', t.dataset.m === 'simple' ? '1' : '0'); if (S.liveSheet) S.liveSheet(); },
   simplify: async t => {
