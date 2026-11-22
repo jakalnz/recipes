@@ -113,3 +113,8 @@ test('scaling: halves, doubles and triples read like a recipe', () => {
   assert.equal(niceQty(0.33), '⅓');
   assert.equal(niceQty(2.5), '2½');
 });
+test('scaling a lot: many spoons become bigger measures', () => {
+  assert.equal(scaleLine('2 tbsp soy sauce', 10), '1¼ cups soy sauce');
+  assert.equal(scaleLine('1 tsp salt', 6), '2 tbsp salt');
+  assert.equal(scaleLine('1 tsp salt', 2), '2 tsp salt');
+});

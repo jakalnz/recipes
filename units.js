@@ -150,6 +150,9 @@ function scaleAmount(q, unit, k){
   const v = q * k, u = (unit || '').toLowerCase().replace(/\.$/, '');
   if (/^(g|grams?)$/.test(u)) return v >= 1000 ? `${dp1(v / 1000)} kg` : `${roundMetric(v)} ${unit}`;
   if (/^(ml|millilitres?|milliliters?)$/.test(u)) return v >= 1000 ? `${dp1(v / 1000)} L` : `${roundMetric(v)} ${unit}`;
+  // lots of spoons read better as bigger measures (NZ: 5 ml tsp, 15 ml tbsp, 250 ml cup)
+  if (/^(tsp|teaspoons?)$/.test(u) && v >= 6) return scaleAmount(v / 3, 'tbsp', 1);
+  if (/^(tbsp|tablespoons?)$/.test(u) && v >= 8) return scaleAmount(v * 15 / 250, 'cups', 1);
   if (/^(kg|l|litres?|liters?)$/.test(u)) return v < 1 ? `${roundMetric(v * 1000)} ${u === 'kg' ? 'g' : 'ml'}` : `${dp1(v)} ${unit}`;
   return `${niceQty(v)}${unit ? ' ' + countWord(unit, v) : ''}`;
 }

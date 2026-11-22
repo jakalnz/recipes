@@ -19,7 +19,7 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { PRESETS, LEVELS, presetById, checkRecipe, itemActive, openFlags, swapLine, avoidList, suitsAll } from './diet.js';
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
-import { metricRecipe, scaleLine, niceQty } from './units.js';
+import { metricRecipe, scaleLine, niceQty, num } from './units.js';
 import { findRecipe, fromJsonLd, fromAi, parseLooseJson } from './jsonld.js';
 import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily, simplifySteps, simplifyPrompt, swapIdeas, swapPrompt, cleanSwaps } from './ai.js';
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
@@ -409,9 +409,10 @@ async function savePerson(){
 }
 
 /* ---------- making more or less: ½×, 2×, 3× (for this visit; not saved) ---------- */
-const SCALES = [0.5, 1, 1.5, 2, 3];
 const scaleOf = id => S.scales?.[id] || 1;
-const scaleName = k => `${niceQty(k)}×`;
+const scaleName = k => `${Math.round(k * 100) / 100}×`;
+// what's typed: "2", "0.5", "1/2", "½", "1 1/2"; between 0.05 and 100
+const readScale = v => { const n = num(String(v).replace(/[×x]\s*$/i, '').replace(',', '.')); return n > 0 ? Math.min(100, Math.max(0.05, n)) : null; };
 
 /* ---------- swap ideas and versions ---------- */
 const flagPeople = () => (LS.get('flagScope') || 'mine') === 'all' ? S.people : myPeople();
@@ -618,8 +619,10 @@ function viewRecipe(id){
       ${steps.length ? `<span class="seg" role="group" aria-label="Method"><button class="btn sm ${simpleMode ? '' : 'pri'}" data-a="stepMode" data-m="full">As written</button><button class="btn sm ${simpleMode ? 'pri' : ''}" data-a="stepMode" data-m="simple">Simple</button></span>` : ''}</div>
     <div class="cols${split ? ' on' : ''}"><section class="ci">
       <h3>Ingredients</h3>
-      <div class="seg scale" role="group" aria-label="Make more or less">${SCALES.map(x => `<button class="btn sm ${x === k ? 'pri' : ''}" data-a="scaleBy" data-id="${r.id}" data-k="${x}" aria-pressed="${x === k}">${scaleName(x)}</button>`).join('')}</div>
-      ${k !== 1 ? `<p class="note">Amounts are for ${k < 1 ? 'half' : scaleName(k)} the recipe. The method isn't changed, so check tin sizes and cooking times.</p>` : ''}
+      <div class="scalebox"><label>Make <input class="sc" data-a-change="scaleSet" data-id="${r.id}" value="${Math.round(k * 100) / 100}" inputmode="decimal" enterkeyhint="done" aria-label="How many times the recipe, e.g. 2 or 0.5"> ×</label>
+        ${r.servings ? `<label>or serves <input class="sc" data-a-change="scaleServes" data-id="${r.id}" value="${Math.round(r.servings * k * 100) / 100}" inputmode="decimal" enterkeyhint="done" aria-label="How many servings"></label>` : ''}
+        ${k !== 1 ? `<button class="btn sm" data-a="scaleReset" data-id="${r.id}">Back to 1×</button>` : ''}</div>
+      ${k !== 1 ? `<p class="note">Amounts are ${scaleName(k)} the recipe. The method isn't changed, so check tin sizes and cooking times.</p>` : ''}
       ${conv ? `<p class="note">${orig ? 'Showing the original wording.' : 'Converted to metric.'} <button class="link" data-a="toggleOrig" data-id="${r.id}">${orig ? 'Show metric' : 'Show original'}</button></p>` : ''}
       ${(r.ingredients || []).length ? `<ul class="ings">${r.ingredients.map(i => i.heading ? `<li class="ih">${esc(i.original)}</li>` : ing(i)).join('')}</ul>` : '<p class="note">None yet.</p>'}
     </section><section class="cm">
@@ -1269,7 +1272,7 @@ const A = {
     const l = had.includes(k) ? had.filter(x => x !== k) : [...had.filter(x => !(k !== 'try' && x === 'try')), k];
     try { await updateDoc(doc(db, 'rxRecipes', r.id), new FieldPath('lists', S.user.uid), l.length ? l : deleteField()); }
     catch (e){ console.error(e); toast("Couldn't save that"); } },
-  scaleBy: t => { S.scales[t.dataset.id] = +t.dataset.k; if (S.liveSheet) S.liveSheet(); },
+  scaleReset: t => { delete S.scales[t.dataset.id]; if (S.liveSheet) S.liveSheet(); },
   splitView: t => { LS.set('split', LS.get('split') === '1' ? '0' : '1'); if (S.liveSheet) S.liveSheet(); },
   stepMode: t => { LS.set('simple', t.dataset.m === 'simple' ? '1' : '0'); if (S.liveSheet) S.liveSheet(); },
   simplify: async t => {
@@ -1443,6 +1446,9 @@ const CH = {
     const m = S.shop.items.length ? matchShop(x.name, S.shop.items) : null; x.matchId = m?.item.id || ''; x.cat = guessCategory(x.name, S.shop.cats); drawShopList(); },
   srCat: t => { S.shop.rows[+t.dataset.n].cat = t.value; },
   srOpt: t => CH.srName(t),
+  scaleSet: t => { const k = readScale(t.value); if (k) S.scales[t.dataset.id] = k; else toast('Type a number, like 2 or 0.5'); S.liveSheet?.(); },
+  scaleServes: t => { const r = S.recipes.find(x => x.id === t.dataset.id), n = num(String(t.value).replace(',', '.'));
+    const k = r?.servings && n > 0 ? readScale(n / r.servings) : null; if (k) S.scales[r.id] = k; else toast('Type how many servings'); S.liveSheet?.(); },
   swapPick: t => { const st = swapState(t.dataset.id); t.checked ? st.picks.add(t.dataset.k) : st.picks.delete(t.dataset.k); S.liveSheet?.(); },
 };
 document.addEventListener('click', e => {
