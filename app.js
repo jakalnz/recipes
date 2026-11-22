@@ -109,6 +109,20 @@ $('#signin').onclick = async () => {
 $('#signoutLogin').onclick = () => signOut(auth);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
+/* ---------- updates: a phone can keep the app open for days, so check for a newer version on return ---------- */
+const published = async () => { try { const r = await fetch('app.js', { method: 'HEAD', cache: 'no-store' }); return r.ok ? r.headers.get('last-modified') || r.headers.get('etag') : null; } catch { return null; } };
+let running = null;
+if (!EMU && location.protocol === 'https:'){
+  published().then(v => { running = v; });
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState !== 'visible' || !running || $('#upd')) return;
+    const v = await published(); if (!v || v === running) return;
+    // nothing open: just reload; otherwise offer it, so nothing being typed is lost
+    if (!$('#sheet').classList.contains('on')) { location.reload(); return; }
+    document.body.insertAdjacentHTML('beforeend', '<button id="upd" class="btn tag" onclick="location.reload()">A new version of the app is ready. Tap to reload.</button>');
+  });
+}
+
 /* ---------- install as an app ---------- */
 const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
