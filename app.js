@@ -39,8 +39,18 @@ function openSheet(html){
   const old = $('#sheet .panel'), top = old ? old.scrollTop : 0;
   $('#sheet').innerHTML = `<div class="scrim" data-a="closeSheet"></div><div class="panel" role="dialog">${html}</div>`; $('#sheet').classList.add('on');
   if (top) $('#sheet .panel').scrollTop = top;
+  keepAwake();
 }
-function closeSheet(){ S.liveSheet = null; S.view = ''; $('#sheet').classList.remove('on'); $('#sheet').innerHTML = ''; }
+function closeSheet(){ S.liveSheet = null; S.view = ''; $('#sheet').classList.remove('on'); $('#sheet').innerHTML = ''; keepAwake(); }
+// keep the screen on while a recipe is open, so it doesn't go dark mid-cook (the phone drops the lock when the app is hidden)
+let wake = null;
+async function keepAwake(){
+  const want = !!S.liveSheet?.rid && document.visibilityState === 'visible';
+  if (!want){ if (wake){ const w = wake; wake = null; w.release().catch(() => {}); } return; }
+  if (wake && !wake.released) return;
+  try { wake = await navigator.wakeLock?.request('screen') || null; } catch { wake = null; }
+}
+document.addEventListener('visibilitychange', () => keepAwake());
 
 const avgStars = r => { const v = Object.values(r.stars || {}).filter(n => n > 0); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0; };
 const starText = n => n ? '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.round(n)) : '';
