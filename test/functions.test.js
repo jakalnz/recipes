@@ -1,13 +1,17 @@
 // The server function and the app must ask the AI the same thing and expect the same reply shape.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { INSTRUCTIONS as appInstr } from '../ai.js';
+import { INSTRUCTIONS as appInstr, SIMPLIFY_INSTRUCTIONS as appSimp, SIMPLIFY_SCHEMA as appSimpSchema, simplifyAsk as appAsk } from '../ai.js';
 import { RECIPE_SCHEMA as appSchema } from '../jsonld.js';
-import { INSTRUCTIONS as fnInstr, RECIPE_SCHEMA as fnSchema, readRecipe } from '../functions/recipe-ai.js';
+import { INSTRUCTIONS as fnInstr, RECIPE_SCHEMA as fnSchema, readRecipe, SIMPLIFY_INSTRUCTIONS as fnSimp, SIMPLIFY_SCHEMA as fnSimpSchema, simplifyAsk as fnAsk, simplifySteps } from '../functions/recipe-ai.js';
 
 test('app and server function use identical instructions and schema', () => {
   assert.equal(fnInstr, appInstr);
   assert.deepEqual(fnSchema, appSchema);
+  assert.equal(fnSimp, appSimp);
+  assert.deepEqual(fnSimpSchema, appSimpSchema);
+  const r = { title: 'Pie', steps: ['Heat the oven to 180°C.', 'Bake.'] };
+  assert.equal(fnAsk(r), appAsk(r));
 });
 
 // a stand-in for the Anthropic client, to check the request and the pause_turn loop
@@ -42,4 +46,15 @@ test('link request uses web fetch and continues after pause_turn', async () => {
 test('refusals are reported, not thrown as parse errors', async () => {
   const c = fakeClient([{ stop_reason: 'refusal', content: [] }]);
   assert.deepEqual(await readRecipe(c, { text: 'x' }), { error: 'refused' });
+});
+test('simplify request: numbered steps in, steps out, no tools', async () => {
+  const c = fakeClient([{ stop_reason: 'end_turn', content: [{ type: 'text', text: '{"steps":["Heat oven to 180°C.","Bake 20 minutes."]}' }], usage: { input_tokens: 9, output_tokens: 4 } }]);
+  const r = await simplifySteps(c, { title: 'Pie', steps: ['First, you will want to heat your oven to 180°C, which is important.', 'Bake it for 20 minutes.'] });
+  assert.deepEqual(r.steps, ['Heat oven to 180°C.', 'Bake 20 minutes.']);
+  assert.deepEqual(r.usage, { input: 9, output: 4 });
+  const req = c.calls[0];
+  assert.equal(req.system, fnSimp);
+  assert.deepEqual(req.output_config.format.schema, fnSimpSchema);
+  assert.match(req.messages[0].content[0].text, /1\. First, you will want/);
+  assert.equal(req.tools, undefined);
 });

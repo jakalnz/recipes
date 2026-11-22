@@ -6,7 +6,7 @@ import { defineSecret } from 'firebase-functions/params';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import Anthropic from '@anthropic-ai/sdk';
-import { readRecipe as read } from './recipe-ai.js';
+import { readRecipe as read, simplifySteps } from './recipe-ai.js';
 
 const KEY = defineSecret('ANTHROPIC_API_KEY');
 initializeApp();
@@ -22,11 +22,17 @@ export const readRecipe = onCall({ region: 'australia-southeast1', secrets: [KEY
   if (!ai.enabled) throw new HttpsError('failed-precondition', 'The family AI is switched off.');
 
   // check the input before spending anything
-  const { images = [], text = '', url = '' } = req.data || {};
-  if (!Array.isArray(images) || images.length > 4 || images.some(i => typeof i !== 'string' || i.length > 3_000_000)) throw new HttpsError('invalid-argument', 'Up to 4 photos, each under about 2 MB.');
-  if (typeof text !== 'string' || text.length > 60_000) throw new HttpsError('invalid-argument', 'That text is too long.');
-  if (url && !/^https?:\/\/[^\s]+$/i.test(url)) throw new HttpsError('invalid-argument', "That link doesn't look right.");
-  if (!images.length && !text.trim() && !url) throw new HttpsError('invalid-argument', 'Nothing to read.');
+  const { task = 'read', images = [], text = '', url = '', title = '', steps = [] } = req.data || {};
+  if (task === 'simplify'){
+    if (!Array.isArray(steps) || !steps.length || steps.length > 80 || steps.some(s => typeof s !== 'string') || steps.join('').length > 30_000 || typeof title !== 'string' || title.length > 300)
+      throw new HttpsError('invalid-argument', 'That method is empty or too long to simplify.');
+  } else if (task !== 'read') throw new HttpsError('invalid-argument', 'Unknown job.');
+  else if (!Array.isArray(images) || images.length > 4 || images.some(i => typeof i !== 'string' || i.length > 3_000_000)) throw new HttpsError('invalid-argument', 'Up to 4 photos, each under about 2 MB.');
+  if (task === 'read'){
+    if (typeof text !== 'string' || text.length > 60_000) throw new HttpsError('invalid-argument', 'That text is too long.');
+    if (url && !/^https?:\/\/[^\s]+$/i.test(url)) throw new HttpsError('invalid-argument', "That link doesn't look right.");
+    if (!images.length && !text.trim() && !url) throw new HttpsError('invalid-argument', 'Nothing to read.');
+  }
 
   // daily limit per person (NZ days)
   const limit = Math.max(1, +ai.dailyLimit || 20), day = NZ_DAY(), ref = db.doc(`rxUsage/${req.auth.uid}`);
@@ -39,13 +45,13 @@ export const readRecipe = onCall({ region: 'australia-southeast1', secrets: [KEY
 
   const client = new Anthropic({ apiKey: KEY.value() });
   try {
-    const r = await read(client, { images, text, url });
+    const r = task === 'simplify' ? await simplifySteps(client, { title, steps }) : await read(client, { images, text, url });
     if (r.usage) await ref.set({ tokens: { input: FieldValue.increment(r.usage.input), output: FieldValue.increment(r.usage.output) } }, { merge: true });
     if (r.error === 'refused') throw new HttpsError('failed-precondition', 'The AI declined to read this one. Try Copy prompt instead.');
     if (r.error === 'too-long') throw new HttpsError('failed-precondition', 'The recipe was too long to read in one go.');
     if (r.error === 'fetch') throw new HttpsError('failed-precondition', `Couldn't open that page (${r.code}). Try the browser button instead.`);
     if (r.error) throw new HttpsError('deadline-exceeded', 'The AI took too long. Try again.');
-    return r.recipe;
+    return task === 'simplify' ? { steps: r.steps } : r.recipe;
   } catch (e){
     if (e instanceof HttpsError) throw e;
     console.error(e);

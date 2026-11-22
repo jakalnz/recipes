@@ -27,7 +27,20 @@ Put each method step in its own item, without numbers.
 If a photo is of a handwritten card or a page that is hard to read, give your best reading and list anything you are unsure of in "unclear".
 If there is no recipe, set "found" to false and leave the other fields empty.`;
 
-const EXAMPLE = { found: true, title: '', servings: '', prepTime: '', cookTime: '', ingredients: ['...'], steps: ['...'], notes: '', categories: ['Dinner'], sourceName: '', unclear: [] };
+// Shortening a wordy method (the server function asks the same, checked by a test).
+export const SIMPLIFY_INSTRUCTIONS = `You rewrite the method of a recipe so it is quick to follow while cooking, for a family recipe app in New Zealand.
+Keep every step that matters, in the same order. Keep every quantity, temperature, time, tin or dish size and doneness cue exactly as written, for example "180°C", "20 minutes" or "until golden".
+Cut stories, chatty or repeated wording, and explanations of why. Use short, plain sentences that start with the action. Put one action, or a few closely linked actions, in each step.
+Never add steps, ingredients, amounts or advice that are not in the original. Give the steps without numbers.`;
+export const SIMPLIFY_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['steps'],
+  properties: { steps: { type: 'array', items: { type: 'string' }, description: 'the simplified steps in order, without numbering' } },
+};
+export const simplifyAsk = ({ title = '', steps = [] }) => `Simplify the method of "${title}":\n\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
+// for the no-key route
+export const simplifyPrompt = r => `${SIMPLIFY_INSTRUCTIONS}\n\nReply with only JSON in exactly this shape, nothing else:\n{"steps": ["..."]}\n\n${simplifyAsk(r)}`;
+
+const EXAMPLE ={ found: true, title: '', servings: '', prepTime: '', cookTime: '', ingredients: ['...'], steps: ['...'], notes: '', categories: ['Dinner'], sourceName: '', unclear: [] };
 // for the no-key route: paste into ChatGPT, Gemini, Claude, Copilot …
 export function copyPrompt(kind, { url = '', text = '' } = {}){
   const what = kind === 'photo' ? 'the recipe in the photo(s) I have attached'
@@ -43,15 +56,27 @@ export async function extractRecipe(input, a = getAi()){
   if (usingFamily(a)) return family(input);
   const ask = input.url ? `Read the recipe on this web page: ${input.url}`
     : input.text ? `Read this recipe:\n\n${input.text}` : `Read the recipe in ${input.images?.length > 1 ? 'these photos (they are pages of the same recipe)' : 'this photo'}.`;
-  if (a.provider === 'anthropic') return claude(a, ask, input);
-  if (a.provider === 'openai') return openAiCompatible(a, ask, input);
-  if (a.provider === 'gemini') return gemini(a, ask, input);
+  return ownAi(a, ask, input, INSTRUCTIONS, RECIPE_SCHEMA);
+}
+function ownAi(a, ask, input, system, schema){
+  if (a.provider === 'anthropic') return claude(a, ask, input, system, schema);
+  if (a.provider === 'openai') return openAiCompatible(a, ask, input, system, schema);
+  if (a.provider === 'gemini') return gemini(a, ask, input, system, schema);
   throw new Error('Unknown AI provider');
+}
+
+// a shorter, plainer method: { title, steps } → [steps]
+export async function simplifySteps(r, a = getAi()){
+  if (!aiReady(a)) throw new Error('AI is not set up on this phone.');
+  const j = usingFamily(a) ? await family({ task: 'simplify', title: r.title || '', steps: r.steps })
+    : await ownAi(a, simplifyAsk(r), {}, SIMPLIFY_INSTRUCTIONS, SIMPLIFY_SCHEMA);
+  if (!Array.isArray(j?.steps) || !j.steps.length) throw new Error("The AI didn't send back a method.");
+  return j.steps.map(s => String(s).replace(/^\s*\d+[.)]\s*/, '').trim()).filter(Boolean);
 }
 
 const split = d => { const m = String(d).match(/^data:([^;]+);base64,(.*)$/); return m ? { type: m[1], data: m[2] } : null; };
 
-async function claude(a, ask, input){
+async function claude(a, ask, input, system, schema){
   const { default: Anthropic } = await import(SDK_URL);
   // the key belongs to this phone's owner; it goes only to Anthropic
   const client = new Anthropic({ apiKey: a.key, dangerouslyAllowBrowser: true });
@@ -60,8 +85,8 @@ async function claude(a, ask, input){
     { type: 'text', text: ask }];
   let messages = [{ role: 'user', content }];
   const req = {
-    model, max_tokens: 16000, system: INSTRUCTIONS,
-    output_config: { effort: 'low', format: { type: 'json_schema', schema: RECIPE_SCHEMA } },
+    model, max_tokens: 16000, system,
+    output_config: { effort: 'low', format: { type: 'json_schema', schema } },
     ...(input.url ? { tools: [{ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 3 }] } : {}),
     // Claude Opus 5.5: if it declines on a safety false-positive, the API retries on another model in the same call
     ...(model === 'claude-opus-5-5' ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } : {}),
@@ -89,24 +114,24 @@ async function claude(a, ask, input){
   }
 }
 
-async function openAiCompatible(a, ask, input){
+async function openAiCompatible(a, ask, input, system, schema){
   const base = (a.base || 'https://api.openai.com/v1').replace(/\/+$/, '');
   const content = [{ type: 'text', text: ask }, ...(input.images || []).map(url => ({ type: 'image_url', image_url: { url } }))];
   const r = await fetch(`${base}/chat/completions`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${a.key}` },
-    body: JSON.stringify({ model: a.model, messages: [{ role: 'system', content: INSTRUCTIONS }, { role: 'user', content }],
-      response_format: { type: 'json_schema', json_schema: { name: 'recipe', strict: true, schema: RECIPE_SCHEMA } } }),
+    body: JSON.stringify({ model: a.model, messages: [{ role: 'system', content: system }, { role: 'user', content }],
+      response_format: { type: 'json_schema', json_schema: { name: 'reply', strict: true, schema } } }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(r.status === 401 ? 'The key was rejected. Check it in Settings.' : `AI error ${r.status}: ${j.error?.message || ''}`);
   return parseLooseJson(j.choices?.[0]?.message?.content || '');
 }
 
-async function gemini(a, ask, input){
+async function gemini(a, ask, input, system, schema){
   const parts = [{ text: ask }, ...(input.images || []).map(split).filter(Boolean).map(img => ({ inline_data: { mime_type: img.type, data: img.data } }))];
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(a.model)}:generateContent`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': a.key },
-    body: JSON.stringify({ systemInstruction: { parts: [{ text: INSTRUCTIONS }] }, contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json' } }),
+    body: JSON.stringify({ systemInstruction: { parts: [{ text: system + (schema === RECIPE_SCHEMA ? '' : '\nReply with only JSON like {"steps": ["..."]}.') }] }, contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json' } }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(r.status === 400 || r.status === 403 ? `Gemini didn't accept the key or model: ${j.error?.message || ''}` : `Gemini error ${r.status}`);

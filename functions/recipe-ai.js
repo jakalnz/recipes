@@ -23,6 +23,17 @@ export const RECIPE_SCHEMA = {
   },
 };
 
+// Shortening a wordy method (same as the app's ai.js, checked by a test).
+export const SIMPLIFY_INSTRUCTIONS = `You rewrite the method of a recipe so it is quick to follow while cooking, for a family recipe app in New Zealand.
+Keep every step that matters, in the same order. Keep every quantity, temperature, time, tin or dish size and doneness cue exactly as written, for example "180°C", "20 minutes" or "until golden".
+Cut stories, chatty or repeated wording, and explanations of why. Use short, plain sentences that start with the action. Put one action, or a few closely linked actions, in each step.
+Never add steps, ingredients, amounts or advice that are not in the original. Give the steps without numbers.`;
+export const SIMPLIFY_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['steps'],
+  properties: { steps: { type: 'array', items: { type: 'string' }, description: 'the simplified steps in order, without numbering' } },
+};
+export const simplifyAsk = ({ title = '', steps = [] }) => `Simplify the method of "${title}":\n\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
+
 export const MODEL = 'claude-opus-5-5';
 
 // input: { images?: [dataURL], text?: string, url?: string }  → recipe JSON. `client` is an Anthropic SDK client.
@@ -31,11 +42,21 @@ export async function readRecipe(client, input){
     : input.text ? `Read this recipe:\n\n${input.text}` : `Read the recipe in ${input.images?.length > 1 ? 'these photos (they are pages of the same recipe)' : 'this photo'}.`;
   const images = (input.images || []).map(d => String(d).match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/)).filter(Boolean)
     .map(m => ({ type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } }));
-  let messages = [{ role: 'user', content: [...images, { type: 'text', text: ask }] }];
+  const r = await run(client, INSTRUCTIONS, RECIPE_SCHEMA, [...images, { type: 'text', text: ask }], input.url ? [{ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 3 }] : null);
+  return r.json ? { recipe: r.json, usage: r.usage } : r;
+}
+// input: { title, steps: [string] } → { steps: [string] }
+export async function simplifySteps(client, input){
+  const r = await run(client, SIMPLIFY_INSTRUCTIONS, SIMPLIFY_SCHEMA, [{ type: 'text', text: simplifyAsk(input) }]);
+  return r.json ? { steps: r.json.steps, usage: r.usage } : r;
+}
+
+async function run(client, system, schema, content, tools){
+  let messages = [{ role: 'user', content }];
   const req = {
-    model: MODEL, max_tokens: 16000, system: INSTRUCTIONS,
-    output_config: { effort: 'low', format: { type: 'json_schema', schema: RECIPE_SCHEMA } },
-    ...(input.url ? { tools: [{ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 3 }] } : {}),
+    model: MODEL, max_tokens: 16000, system,
+    output_config: { effort: 'low', format: { type: 'json_schema', schema } },
+    ...(tools ? { tools } : {}),
     // if Claude Opus 5.5 declines on a safety false-positive, the API retries on another model in the same call
     betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
   };
@@ -47,7 +68,7 @@ export async function readRecipe(client, input){
     const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('');
     const fetchErr = res.content.find(b => b.type === 'web_fetch_tool_result' && b.content?.type === 'web_fetch_tool_result_error');
     if (!text && fetchErr) return { error: 'fetch', code: fetchErr.content.error_code };
-    return { recipe: JSON.parse(text), usage: { input: res.usage?.input_tokens || 0, output: res.usage?.output_tokens || 0 } };
+    return { json: JSON.parse(text), usage: { input: res.usage?.input_tokens || 0, output: res.usage?.output_tokens || 0 } };
   }
   return { error: 'timeout' };
 }

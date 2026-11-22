@@ -14,14 +14,14 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut, connectAuthEmulator }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache, collection, doc, onSnapshot,
-  getDoc, setDoc, updateDoc, deleteDoc, addDoc, deleteField, serverTimestamp, FieldPath, connectFirestoreEmulator, writeBatch,
+  getDoc, setDoc, updateDoc, deleteDoc, addDoc, deleteField, arrayUnion, arrayRemove, serverTimestamp, FieldPath, connectFirestoreEmulator, writeBatch,
   query, where, documentId, getDocs }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { PRESETS, LEVELS, presetById, checkRecipe, itemActive } from './diet.js';
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
 import { metricRecipe } from './units.js';
 import { findRecipe, fromJsonLd, fromAi, parseLooseJson } from './jsonld.js';
-import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily } from './ai.js';
+import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily, simplifySteps, simplifyPrompt } from './ai.js';
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 import { makeIndex, computeRecipe, searchFoods, matchFood, parseLine } from './nutrition.js';
 import { MEALS, MEAL_LABEL, iso, fromIso, addDays, weekStart, weekDays, dayShort, dayLong, shoppingList, matchShop, guessCategory, DEFAULT_PANTRY, isPantry } from './planner.js';
@@ -51,6 +51,16 @@ const S = {
   tab: LS.get('tab') || 'recipes', liveSheet: null, editPerson: null,
 };
 const me = () => ({ uid: S.user.uid, name: (S.user.displayName || S.user.email || '?').split(/[ @]/)[0] });
+// personal lists, kept per person on each recipe (recipe.lists[uid])
+const LISTS = [['fav', 'Favourite', '♥'], ['complex', 'Great but complicated', '🧩'], ['try', 'To try', '🔖']];
+const myLists = r => r.lists?.[S.user.uid] || [];
+const listIcons = r => { const l = myLists(r); return LISTS.filter(([k]) => l.includes(k)).map(([, lb, ic]) => `<span class="li" title="${lb}">${ic}</span>`).join(''); };
+const famFavs = r => Object.values(r.lists || {}).filter(l => l.includes('fav')).length;
+// a short fingerprint of a method, to know when a simplified version is out of date
+const stepsKey = steps => { let h = 0; for (const c of (steps || []).join('\n')) h = (h * 31 + c.codePointAt(0)) | 0; return (h >>> 0).toString(36); };
+// recipes linked as "goes well with", from either side
+const pairsOf = r => [...new Set([...(r.pairs || []), ...S.recipes.filter(x => (x.pairs || []).includes(r.id)).map(x => x.id)])]
+  .map(id => S.recipes.find(x => x.id === id)).filter(Boolean).sort(byTitle);
 const touch = () => matchMedia('(pointer: coarse)').matches;   // phones and tablets: offer the camera
 const isAdmin = () =>(S.access?.shop || []).includes(S.user?.email);
 const households = () => S.access?.households || {};
@@ -176,9 +186,12 @@ function render(){
 
 function renderRecipes(){
   const sel = $('#rcat'), cur = sel.value || LS.get('cat') || '';
-  sel.innerHTML = `<option value="">All categories</option>` + CATEGORIES.map(c => `<option ${c === cur ? 'selected' : ''}>${esc(c)}</option>`).join('');
+  sel.innerHTML = `<option value="">All recipes</option><optgroup label="My lists">${LISTS.map(([k, l, ic]) => `<option value="list:${k}" ${cur === 'list:' + k ? 'selected' : ''}>${ic} ${l === 'Favourite' ? 'My favourites' : l}</option>`).join('')}
+    <option value="list:famfav" ${cur === 'list:famfav' ? 'selected' : ''}>♥ Family favourites</option></optgroup>
+    <optgroup label="Categories">${CATEGORIES.map(c => `<option ${c === cur ? 'selected' : ''}>${esc(c)}</option>`).join('')}</optgroup>`;
+  const inGroup = r => !cur ? true : cur === 'list:famfav' ? famFavs(r) > 0 : cur.startsWith('list:') ? myLists(r).includes(cur.slice(5)) : (r.cats || []).includes(cur);
   const q = $('#rq').value.trim().toLowerCase(), sort = $('#rsort').value;
-  let list = S.recipes.filter(r => (!cur || (r.cats || []).includes(cur)) &&
+  let list = S.recipes.filter(r => inGroup(r) &&
     (!q || [r.title, ...(r.cats || []), ...(r.tags || []), ...(r.ingredients || []).map(i => i.original)].join(' ').toLowerCase().includes(q)));
   list.sort(sort === 'az' ? byTitle : sort === 'rated' ? (a, b) => avgStars(b) - avgStars(a) || byTitle(a, b)
     : (a, b) => (b.created?.seconds || 0) - (a.created?.seconds || 0));
@@ -193,12 +206,12 @@ function renderRecipes(){
         return `<li class="tile" data-a="viewRecipe" data-id="${r.id}">
           ${t ? `<img data-thumb="${r.id}" alt="" ${t.src ? `src="${esc(t.src)}"` : ''} referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">` : ''}
           <div class="noimg" aria-hidden="true">${esc((r.title || '?').trim()[0] || '?')}</div>
-          <div class="tt"><b>${esc(r.title)}</b>${avg ? `<span class="stars">${starText(avg)}</span>` : ''}${flags.length ? `<span class="pill ${flags[0].level === 'allergy' ? 'bad' : 'warn'}">${flags.length} flag${flags.length === 1 ? '' : 's'}</span>` : ''}</div></li>`; }).join('')}</ul>`
+          <div class="tt"><b>${listIcons(r)}${esc(r.title)}</b>${avg ? `<span class="stars">${starText(avg)}</span>` : ''}${flags.length ? `<span class="pill ${flags[0].level === 'allergy' ? 'bad' : 'warn'}">${flags.length} flag${flags.length === 1 ? '' : 's'}</span>` : ''}</div></li>`; }).join('')}</ul>`
     : `<ul class="rows">${list.map(r => {
         const flags = checkRecipe(r.ingredients, mine);
         const worst = flags[0];
         return `<li class="row" data-a="viewRecipe" data-id="${r.id}"><div class="grow">
-          <div class="nm">${esc(r.title)}</div>
+          <div class="nm">${listIcons(r)}${esc(r.title)}</div>
           <div class="sub">${avgStars(r) ? `<span class="stars" aria-label="${avgStars(r).toFixed(1)} stars">${starText(avgStars(r))}</span>` : ''}
             ${(r.cats || []).map(c => `<span class="pill plain">${esc(c)}</span>`).join('')}
             ${(r.tags || []).map(c => `<span class="pill plain">#${esc(c)}</span>`).join('')}
@@ -424,7 +437,7 @@ async function saveRecipe(t){
   } catch (e){ console.error(e); toast("Couldn't save the recipe"); }
 }
 function viewRecipe(id){
-  S.liveSheet = () => viewRecipe(id); S.view = '';
+  S.liveSheet = () => viewRecipe(id); S.liveSheet.rid = id; S.view = '';
   const r = S.recipes.find(x => x.id === id); if (!r){ closeSheet(); return; }
   const scope = LS.get('flagScope') || 'mine';
   const people = scope === 'all' ? S.people : myPeople();
@@ -437,6 +450,24 @@ function viewRecipe(id){
   const nut = r.nutrition?.website;
   const conv = (r.ingredients || []).some(i => i.was) || !!r.stepsWas, orig = conv && S.showOrig === id;
   const NUT = [['carbs', 'Carbs', 'g'], ['sugar', 'Sugar', 'g'], ['fat', 'Fat', 'g'], ['satFat', 'Sat. fat', 'g'], ['protein', 'Protein', 'g'], ['fibre', 'Fibre', 'g'], ['kcal', 'Energy', ' kcal']];
+  const split = LS.get('split') === '1', pairs = pairsOf(r), lists = myLists(r), fams = famFavs(r);
+  // method: as written, or the AI's simpler version (kept on the recipe for everyone)
+  const simpleMode = LS.get('simple') === '1' && !orig, steps = r.steps || [];
+  const simpleOk = r.stepsSimple?.length && r.stepsSimpleOf === stepsKey(steps);
+  const ol = list => `<ol>${list.map(s => `<li style="margin-bottom:8px">${esc(s)}</li>`).join('')}</ol>`;
+  const method = !steps.length ? '<p class="note">None yet.</p>'
+    : !simpleMode ? ol(orig && r.stepsWas ? r.stepsWas : steps)
+    : S.simplifying === id ? '<p class="note">Making a simpler version… this can take up to a minute.</p>'
+    : simpleOk ? `${ol(r.stepsSimple)}<p class="note">Shortened by AI${r.stepsSimpleBy ? ` for ${esc(r.stepsSimpleBy)}` : ''}. If anything looks wrong, check “As written”. <button class="link" data-a="simplify" data-id="${r.id}">Make it again</button></p>`
+    : `<p class="note">${r.stepsSimple?.length ? 'The method has been edited since the simple version was made.' : 'No simple version yet.'}</p>
+      ${aiReady() ? `<div class="btns" style="margin-top:0"><button class="btn tag" data-a="simplify" data-id="${r.id}">Make a simple version</button></div>`
+        : `<div class="btns" style="margin-top:0"><button class="btn" data-a="simpCopy" data-id="${r.id}">Copy prompt for a chatbot</button></div>
+          <label>Paste the chatbot's reply<textarea id="simp_reply" rows="4"></textarea></label>
+          <div class="btns" style="margin-top:6px"><button class="btn tag" data-a="simpUse" data-id="${r.id}">Use this reply</button></div>`}`;
+  // an ingredient that is one of the linked recipes gets a link to it
+  const linkFor = text => { const t = text.toLowerCase(); return pairs.find(p => { const n = p.title.toLowerCase().replace(/^(home-?made|easy|quick|simple|best|basic|my|the)\s+/, '').trim(); return n.length > 2 && t.includes(n); }); };
+  const ing = i => { const text = orig && i.was ? i.was : i.original, p = linkFor(text);
+    return `<li>${esc(text)}${p ? ` <button class="link" data-a="viewRecipe" data-id="${p.id}">recipe →</button>` : ''}</li>`; };
   const heroSrc = cid ? photoData(cid) : r.photoUrl || '';
   const hero = cid || r.photoUrl ? `<img class="hero" ${cid ? `data-pid="${esc(cid)}"` : ''} ${heroSrc ? `src="${esc(heroSrc)}"` : ''} alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
   const strip = `<h3>Photos</h3>
@@ -456,6 +487,8 @@ function viewRecipe(id){
       ${host ? `<a href="${esc(r.source.url)}" target="_blank" rel="noopener">${esc(host)}</a>` : ''}</div>
     <div class="rate" role="group" aria-label="Your rating">${[1, 2, 3, 4, 5].map(n => `<button data-a="rate" data-id="${r.id}" data-n="${n === mine ? 0 : n}" aria-label="${n} star${n > 1 ? 's' : ''}" class="${n <= mine ? 'on' : ''}">★</button>`).join('')}
       <span class="note">${mine ? 'Your rating' : 'Tap to rate'}${raters ? ` · family average ${avg.toFixed(1)} from ${raters}` : ''}</span></div>
+    <div class="marks" role="group" aria-label="Your lists">${LISTS.map(([k, l, ic]) => `<button class="chip${lists.includes(k) ? ' on' : ''}" data-a="mark" data-id="${r.id}" data-k="${k}" aria-pressed="${lists.includes(k)}">${ic} ${l}</button>`).join('')}
+      ${fams ? `<span class="note">♥ ${fams === 1 && lists.includes('fav') ? 'Your favourite' : `Favourite of ${fams} in the family`}</span>` : ''}</div>
     ${strip}
     <h3>Dietary check</h3>
     <div class="btns" style="margin-top:0"><button class="btn sm ${scope === 'mine' ? 'pri' : ''}" data-a="flagScope" data-s="mine">My household</button>
@@ -464,18 +497,53 @@ function viewRecipe(id){
       : flags.length ? flags.map(f => `<div class="mini"><span class="pill ${f.level === 'allergy' ? 'bad' : 'warn'}">${esc(LEVELS[f.level].short)}</span>
           <span class="grow"><strong>${esc(f.person)}</strong>: ${esc(f.label)} · <span class="note">${esc(f.ingredient)}</span>${f.hint ? `<br><span class="note">${esc(f.hint)}</span>` : ''}</span></div>`).join('')
       : `<p class="note">Nothing flagged for ${scope === 'all' ? 'the family' : 'your household'}.</p>`}
-    <h3>Ingredients</h3>
-    ${conv ? `<p class="note">${orig ? 'Showing the original wording.' : 'Converted to metric.'} <button class="link" data-a="toggleOrig" data-id="${r.id}">${orig ? 'Show metric' : 'Show original'}</button></p>` : ''}
-    ${(r.ingredients || []).length ? `<ul class="ings">${r.ingredients.map(i => i.heading ? `<li class="ih">${esc(i.original)}</li>` : `<li>${esc(orig && i.was ? i.was : i.original)}</li>`).join('')}</ul>` : '<p class="note">None yet.</p>'}
-    <h3>Method</h3>
-    ${(r.steps || []).length ? `<ol>${(orig && r.stepsWas ? r.stepsWas : r.steps).map(s =>`<li style="margin-bottom:8px">${esc(s)}</li>`).join('')}</ol>` : '<p class="note">None yet.</p>'}
+    <div class="btns viewbar"><button class="btn sm" data-a="splitView" aria-pressed="${split}">${split ? '☰ One column' : '◫ Side by side'}</button>
+      ${steps.length ? `<span class="seg" role="group" aria-label="Method"><button class="btn sm ${simpleMode ? '' : 'pri'}" data-a="stepMode" data-m="full">As written</button><button class="btn sm ${simpleMode ? 'pri' : ''}" data-a="stepMode" data-m="simple">Simple</button></span>` : ''}</div>
+    <div class="cols${split ? ' on' : ''}"><section class="ci">
+      <h3>Ingredients</h3>
+      ${conv ? `<p class="note">${orig ? 'Showing the original wording.' : 'Converted to metric.'} <button class="link" data-a="toggleOrig" data-id="${r.id}">${orig ? 'Show metric' : 'Show original'}</button></p>` : ''}
+      ${(r.ingredients || []).length ? `<ul class="ings">${r.ingredients.map(i => i.heading ? `<li class="ih">${esc(i.original)}</li>` : ing(i)).join('')}</ul>` : '<p class="note">None yet.</p>'}
+    </section><section class="cm">
+      <h3>Method${simpleMode ? ' (simple)' : ''}</h3>
+      ${method}
+    </section></div>
     ${r.notes ? `<h3>Notes</h3><p style="white-space:pre-line">${esc(r.notes)}</p>` : ''}
+    <h3>Goes well with</h3>
+    ${pairs.length ? `<div class="marks">${pairs.map(p => `<span class="chip pair"><button data-a="viewRecipe" data-id="${p.id}">${esc(p.title)}</button><button class="x" data-a="unpair" data-id="${r.id}" data-o="${p.id}" aria-label="Unlink ${esc(p.title)}">✕</button></span>`).join('')}</div>`
+      : '<p class="note">Link a seasoning, sauce, dressing or side that goes with this.</p>'}
+    <div class="btns" style="margin-top:6px"><button class="btn sm" data-a="pairPick" data-id="${r.id}">+ Link a recipe</button></div>
     ${nutritionSection(r)}
     ${nut ? `<details class="sub-d"><summary>What the website said</summary><p class="note">Copied from the website by Paprika. Not checked and sometimes wrong.</p>
       <div class="nut">${NUT.filter(([k]) => nut[k] != null).map(([k, l, u]) => `<div><b>${esc(nut[k])}${u}</b><span>${l}</span></div>`).join('')}</div></details>` : ''}
     <div class="btns"><button class="btn tag" data-a="planRecipe" data-id="${r.id}">Add to plan</button><button class="btn" data-a="editRecipe" data-id="${r.id}">Edit</button>
       ${canDelete ? `<button class="btn danger" data-a="delRecipe" data-id="${r.id}">Delete</button>` : ''}
       <button class="btn pri" data-a="closeSheet">Done</button></div>`);
+  $('#sheet .panel').classList.toggle('wide', split);
+}
+
+// choose recipes that go well with this one
+function openPairPick(id){
+  const r = S.recipes.find(x => x.id === id); if (!r) return;
+  S.liveSheet = null; S.view = ''; S.pairFor = id;
+  openSheet(`<h2>Goes well with ${esc(r.title)}</h2>
+    <p class="note">Pick a seasoning, sauce, dressing, side or dessert. The link shows on both recipes.</p>
+    <label>Find a recipe<input id="pp_q" type="search" autocomplete="off"></label>
+    <div class="pickbox"><ul class="rows" id="pp_list"></ul></div>
+    <div class="btns"><button class="btn pri" data-a="viewRecipe" data-id="${id}">Back</button></div>`);
+  drawPairList();
+}
+function drawPairList(){
+  const box = $('#pp_list'), r = S.recipes.find(x => x.id === S.pairFor); if (!box || !r) return;
+  const q = ($('#pp_q')?.value || '').trim().toLowerCase(), linked = new Set(pairsOf(r).map(x => x.id));
+  const list = S.recipes.filter(x => x.id !== r.id && !linked.has(x.id) && (!q || [x.title, ...(x.cats || [])].join(' ').toLowerCase().includes(q))).sort(byTitle).slice(0, 80);
+  box.innerHTML = list.length ? list.map(x => `<li class="row" data-a="pair" data-id="${r.id}" data-o="${x.id}"><div class="grow"><div class="nm">${esc(x.title)}</div>
+      <div class="sub">${(x.cats || []).map(c => `<span class="pill plain">${esc(c)}</span>`).join('')}</div></div></li>`).join('')
+    : '<li class="empty">No other recipes match.</li>';
+}
+
+async function saveSimple(r, steps){
+  try { await updateDoc(doc(db, 'rxRecipes', r.id), { stepsSimple: steps, stepsSimpleOf: stepsKey(r.steps), stepsSimpleBy: me().name }); toast('Simple method saved for everyone'); }
+  catch (e){ console.error(e); toast("Couldn't save the simple method"); }
 }
 
 /* ---------- nutrition (NZ FOODfiles → AFCD → USDA) ---------- */
@@ -1071,6 +1139,40 @@ const A = {
       closeSheet(); toast('Deleted');
     } catch (e){ toast("Couldn't delete"); } },
   rview: t => { LS.set('rview', t.dataset.v); renderRecipes(); },
+  mark: async t => {
+    const r = S.recipes.find(x => x.id === t.dataset.id), k = t.dataset.k; if (!r) return;
+    const had = myLists(r);
+    // marking a favourite or "great but complicated" means it has been tried
+    const l = had.includes(k) ? had.filter(x => x !== k) : [...had.filter(x => !(k !== 'try' && x === 'try')), k];
+    try { await updateDoc(doc(db, 'rxRecipes', r.id), new FieldPath('lists', S.user.uid), l.length ? l : deleteField()); }
+    catch (e){ console.error(e); toast("Couldn't save that"); } },
+  splitView: t => { LS.set('split', LS.get('split') === '1' ? '0' : '1'); if (S.liveSheet) S.liveSheet(); },
+  stepMode: t => { LS.set('simple', t.dataset.m === 'simple' ? '1' : '0'); if (S.liveSheet) S.liveSheet(); },
+  simplify: async t => {
+    const r = S.recipes.find(x => x.id === t.dataset.id); if (!r || S.simplifying) return;
+    S.simplifying = r.id; viewRecipe(r.id);
+    try { await saveSimple(r, await simplifySteps(r)); }
+    catch (e){ console.error(e); toast(e.message || "Couldn't simplify the method"); }
+    finally { S.simplifying = null; if (S.liveSheet?.rid === r.id) S.liveSheet(); } },
+  simpCopy: async t => {
+    const r = S.recipes.find(x => x.id === t.dataset.id); if (!r) return;
+    try { await navigator.clipboard.writeText(simplifyPrompt(r)); toast('Prompt copied. Paste it into ChatGPT, Claude or Gemini, then paste the reply here.'); } catch { toast("Couldn't copy"); } },
+  simpUse: async t => {
+    const r = S.recipes.find(x => x.id === t.dataset.id); if (!r) return;
+    const j = parseLooseJson($('#simp_reply')?.value || '');
+    const steps = Array.isArray(j?.steps) ? j.steps.map(s => String(s).replace(/^\s*\d+[.)]\s*/, '').trim()).filter(Boolean) : [];
+    if (!steps.length){ toast("That reply doesn't have the steps in it"); return; }
+    await saveSimple(r, steps); },
+  pairPick: t => openPairPick(t.dataset.id),
+  pair: async t => {
+    const a = t.dataset.id, b = t.dataset.o;
+    try { const w = writeBatch(db); w.update(doc(db, 'rxRecipes', a), { pairs: arrayUnion(b) }); w.update(doc(db, 'rxRecipes', b), { pairs: arrayUnion(a) }); await w.commit();
+      toast(`Linked ${S.recipes.find(x => x.id === b)?.title || ''}`); viewRecipe(a); }
+    catch (e){ console.error(e); toast("Couldn't link them"); } },
+  unpair: async t => {
+    const a = t.dataset.id, b = t.dataset.o;
+    try { const w = writeBatch(db); w.update(doc(db, 'rxRecipes', a), { pairs: arrayRemove(b) }); w.update(doc(db, 'rxRecipes', b), { pairs: arrayRemove(a) }); await w.commit(); }
+    catch (e){ console.error(e); toast("Couldn't unlink them"); } },
   rate: async t => { try { await updateDoc(doc(db, 'rxRecipes', t.dataset.id), new FieldPath('stars', S.user.uid), +t.dataset.n || deleteField()); } catch (e){ toast("Couldn't save your rating"); } },
   weekPrev: () => { S.week = addDays(S.week, -7); watchWeek(); render(); },
   weekNext: () => { S.week = addDays(S.week, 7); watchWeek(); render(); },
@@ -1220,6 +1322,7 @@ $('#rq').addEventListener('input', renderRecipes);
 document.addEventListener('input', e => {
   if (e.target.id === 'nfQ'){ clearTimeout(S.nfT); S.nfT = setTimeout(drawFixResults, 200); }
   if (e.target.id === 'pa_q') drawPaList();
+  if (e.target.id === 'pp_q') drawPairList();
 });
 document.addEventListener('change', e => { if (e.target.name === 'nfFood') S.fix.foodId = e.target.value; });
 document.addEventListener('toggle', e => { if (e.target.dataset?.nut) S.nutOpen = e.target.open ? e.target.dataset.nut : null; }, true);
