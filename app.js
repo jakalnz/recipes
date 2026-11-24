@@ -97,6 +97,8 @@ async function familyRead(input){
   try { return (await readRecipeFn(input)).data; }
   catch (e){ console.error(e); throw new Error(e.code === 'functions/not-found' || e.code === 'functions/internal' && /not found|404/i.test(e.message) ? "The family AI isn't set up on the server yet." : e.message || 'The family AI had a problem.'); }
 }
+// free link reading (no AI): the server fetches the page and sends back its recipe data, or its text
+const fetchRecipeFn = httpsCallable(fns, 'fetchRecipe', { timeout: 30000 });
 if (EMU){
   connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
   connectFirestoreEmulator(db, '127.0.0.1', 8181);
@@ -1045,13 +1047,16 @@ function openImport(){
   openSheet(`<h2>Add recipes</h2>
     <p class="note">${usingFamily(ai) ? `Using the family AI (up to ${+S.access.ai?.dailyLimit || 20} reads a day each).` : ready ? `AI on this phone: ${esc(PROVIDERS[ai.provider])}.` : 'No AI on this phone, so photos and links use the free Copy prompt route.'}</p>
     <h3>From a web page</h3>
+    ${touch() ? '<p class="note"><b>On iPhone:</b> in Safari tap Share, then Copy. Come back here and tap Paste link.</p>' : ''}
     <label>Recipe link<input id="im_url" type="url" inputmode="url" placeholder="https://…" autocomplete="off"></label>
-    <div class="btns" style="margin-top:6px"><button class="btn tag" data-a="imUrl">${canReadLinks(ai) ? 'Read the page' : 'Copy prompt for a chatbot'}</button></div>
+    <div class="btns" style="margin-top:6px">${touch() ? '<button class="btn tag" data-a="imPasteLink">Paste link</button>' : ''}<button class="btn ${touch() ? '' : 'tag'}" data-a="imUrl">Read the page</button><button class="btn" data-a="imUrlPrompt">Copy prompt for a chatbot</button></div>
+    <p class="note">Most recipe sites are read for free.${ready ? ' If a page has no recipe data, the AI reads it instead.' : ''}</p>
     <details class="sub-d"><summary>Browser button: one tap on any recipe page (free)</summary>
       <p class="note">Most recipe sites include the recipe in a standard form. This button reads it straight off the page, with no AI needed. For other pages it brings the page text across.</p>
       <p><b>On a computer:</b> drag this to your bookmarks bar: <a class="btn sm tag" href="${esc(bookmarklet())}" onclick="return false">Save to Recipes</a></p>
       <p><b>On a phone:</b> 1. Bookmark any page. 2. <button class="link" data-a="imCopyBm">Copy the button code</button>. 3. Edit the bookmark: name it <b>Save to Recipes</b> and paste the code over its address.
-        Then on a recipe page, <b>Android Chrome:</b> type “Save to Recipes” in the address bar and tap the bookmark. <b>iPhone Safari:</b> open Bookmarks and tap it.</p>
+        Then on a recipe page, <b>Android Chrome:</b> type “Save to Recipes” in the address bar and tap the bookmark.</p>
+      <p class="note">On iPhone, use Paste link instead. The button opens the recipe in Safari rather than the Recipes app on your home screen, and Safari keeps its own separate sign-in.</p>
       <p class="note">On Android you can also Share a recipe page to this app once it's installed.</p>
     </details>
     <h3>From a photo</h3>
@@ -1140,11 +1145,32 @@ function incomingImport(){
   openImport();
   if (data.url) $('#im_url').value = data.url;
   if (data.text) $('#im_text').value = (data.title ? data.title + '\n\n' : '') + data.text;
-  if (data.url && !data.text && canReadLinks()) runAi({ url: data.url }, hostOf(data.url));
+  if (data.url && !data.text) readLink(data.url);
   else if (data.text && aiReady()) runAi({ text: $('#im_text').value, url: data.url }, hostOf(data.url) || 'the page text');
   else imStatus(data.text ? "This page didn't include recipe data, so its text is below. Use Copy prompt, or tidy it up yourself." : 'Use Copy prompt with any chatbot, then paste its reply.');
 }
 const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
+// a pasted or shared link: read the page's recipe data for free first; the AI is only the backup
+async function readLink(url){
+  const host = hostOf(url);
+  imStatus('Opening the page…');
+  document.querySelectorAll('.panel [data-a^=im]').forEach(b => b.disabled = true);
+  let page = null;
+  try { page = (await fetchRecipeFn({ url })).data; }
+  catch (e){ console.error(e); if (e.code === 'functions/invalid-argument'){ imStatus(e.message); return; } }
+  finally { document.querySelectorAll('.panel [data-a^=im]').forEach(b => b.disabled = false); }
+  let recipe = null;
+  try { recipe = page?.ldJson ? findRecipe(JSON.parse(page.ldJson)) : null; } catch (e){ console.error(e); }
+  if (recipe){ openRecipeForm(null, { ...fromJsonLd(recipe, page.url || url), from: host || 'the web page' }); return; }
+  const text = page?.text?.trim() ? (page.title ? page.title + '\n\n' : '') + page.text : '';
+  if (text && aiReady()){ imStatus('No recipe data on that page, so the AI is reading it…'); return runAi({ text, url }, host || 'the page text'); }
+  if (!text && canReadLinks()) return runAi({ url }, host);   // the page wouldn't open from our server: let the AI try
+  // no AI to fall back on: leave it ready for the Copy prompt buttons (the copy needs a fresh tap on iPhone)
+  const box = $('#im_text');
+  if (text && box) box.value = text;
+  imStatus(text ? "That page didn't include recipe data, so its text is in the box below. Tap Copy prompt for a chatbot under it, or tidy the text up yourself."
+    : "Couldn't open that page. Tap Copy prompt for a chatbot under the link, or copy the recipe text from the page and paste it below.");
+}
 async function loadImportFile(file){
   $('#impStatus').textContent = 'Reading…';
   try {
@@ -1367,9 +1393,16 @@ const A = {
   importer: openImport,
   imUrl: () => { const url = $('#im_url').value.trim();
     if (!/^https?:\/\//i.test(url)){ imStatus('Paste the full link, starting with https://'); return; }
-    if (canReadLinks()) runAi({ url }, hostOf(url));
-    else copyForChatbot('url', { url }, aiReady() ? 'Reading links needs a Claude key, so the prompt is copied instead. Paste it into a chatbot that can open web pages, then paste its reply below. Or use the browser button.'
-      : 'Prompt copied. Paste it into a chatbot that can open web pages (ChatGPT, Claude, Gemini), then paste its reply below. Or use the browser button.'); },
+    readLink(url); },
+  imUrlPrompt: () => { const url = $('#im_url').value.trim();
+    if (!/^https?:\/\//i.test(url)){ imStatus('Paste the full link, starting with https://'); return; }
+    copyForChatbot('url', { url }, 'Prompt copied. Paste it into a chatbot that can open web pages (ChatGPT, Claude, Gemini), then paste its reply below.'); },
+  imPasteLink: async () => {
+    let clip = '';
+    try { clip = await navigator.clipboard.readText(); } catch (e){ imStatus("Couldn't read the clipboard. Press and hold in the link box and choose Paste."); return; }
+    const url = (clip.match(/https?:\/\/\S+/) || [])[0];
+    if (!url){ imStatus('No link on the clipboard. In Safari tap Share, then Copy, and come back.'); return; }
+    $('#im_url').value = url; readLink(url); },
   imCopyBm: async () => { try { await navigator.clipboard.writeText(bookmarklet()); toast('Button code copied'); } catch (e){ toast("Couldn't copy"); } },
   imPhotoPick: () => $('#im_photo').click(),
   imCam: () => $('#im_cam').click(),

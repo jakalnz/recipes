@@ -147,7 +147,7 @@ async function claude(a, ask, input, system, schema){
       if (res.stop_reason === 'max_tokens') throw new Error('The recipe was too long to read in one go.');
       const fetchErr = res.content.find(b => b.type === 'web_fetch_tool_result' && b.content?.type === 'web_fetch_tool_result_error');
       const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('');
-      if (!text && fetchErr) throw new Error(`Couldn't open that page (${fetchErr.content.error_code}). Try the browser button instead.`);
+      if (!text && fetchErr) throw new Error(`Couldn't open that page (${fetchErr.content.error_code}). Try pasting the recipe text instead.`);
       return JSON.parse(text);
     }
     throw new Error('The AI took too long. Try again.');

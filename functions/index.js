@@ -7,17 +7,37 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import Anthropic from '@anthropic-ai/sdk';
 import { readRecipe as read, simplifySteps, swapIdeas } from './recipe-ai.js';
+import { readPage } from './page.js';
 
 const KEY = defineSecret('ANTHROPIC_API_KEY');
 initializeApp();
 const db = getFirestore();
 const NZ_DAY = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Pacific/Auckland' });   // YYYY-MM-DD in NZ
 
-export const readRecipe = onCall({ region: 'australia-southeast1', secrets: [KEY], timeoutSeconds: 180, memory: '512MiB', maxInstances: 3 }, async req => {
+// signed in, verified and on the family list → { email, fam }
+async function familyOnly(req){
   const email = req.auth?.token?.email, verified = req.auth?.token?.email_verified;
   if (!req.auth || !email || !verified) throw new HttpsError('unauthenticated', 'Sign in first.');
   const fam = (await db.doc('access/family').get()).data() || {};
   if (!fam.members?.[email] && !(fam.shop || []).includes(email)) throw new HttpsError('permission-denied', "You're not on the family list.");
+  return { email, fam };
+}
+
+// Free link reading: fetches the page and returns its recipe data (JSON-LD), or its text for the AI backup.
+// No AI and no daily limit, so it works even when the family AI is off.
+export const fetchRecipe = onCall({ region: 'australia-southeast1', timeoutSeconds: 30, memory: '256MiB', maxInstances: 5 }, async req => {
+  await familyOnly(req);
+  const url = req.data?.url;
+  if (typeof url !== 'string' || url.length > 2000) throw new HttpsError('invalid-argument', "That link doesn't look right.");
+  const r = await readPage(url);
+  if (r.error === 'bad-url') throw new HttpsError('invalid-argument', "That link doesn't look right.");
+  // sent as a string: the callable protocol reads any object with an "@type" key as one of its own types, and JSON-LD is full of them
+  const { ld, ...rest } = r;
+  return ld ? { ...rest, ldJson: JSON.stringify(ld) } : rest;
+});
+
+export const readRecipe = onCall({ region: 'australia-southeast1', secrets: [KEY], timeoutSeconds: 180, memory: '512MiB', maxInstances: 3 }, async req => {
+  const { email, fam } = await familyOnly(req);
   const ai = fam.ai || {};
   if (!ai.enabled) throw new HttpsError('failed-precondition', 'The family AI is switched off.');
 
@@ -54,7 +74,7 @@ export const readRecipe = onCall({ region: 'australia-southeast1', secrets: [KEY
     if (r.usage) await ref.set({ tokens: { input: FieldValue.increment(r.usage.input), output: FieldValue.increment(r.usage.output) } }, { merge: true });
     if (r.error === 'refused') throw new HttpsError('failed-precondition', 'The AI declined to read this one. Try Copy prompt instead.');
     if (r.error === 'too-long') throw new HttpsError('failed-precondition', 'The recipe was too long to read in one go.');
-    if (r.error === 'fetch') throw new HttpsError('failed-precondition', `Couldn't open that page (${r.code}). Try the browser button instead.`);
+    if (r.error === 'fetch') throw new HttpsError('failed-precondition', `Couldn't open that page (${r.code}). Try pasting the recipe text instead.`);
     if (r.error) throw new HttpsError('deadline-exceeded', 'The AI took too long. Try again.');
     return task === 'simplify' ? r.simple : task === 'swaps' ? r.swaps : r.recipe;
   } catch (e){
