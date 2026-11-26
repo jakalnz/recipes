@@ -91,6 +91,27 @@ export function fromAi(j, url = ''){
     unclear: j.unclear || [],
   };
 }
+// Code that runs on the recipe page itself, in the person's own browser, so sites that block the link reader
+// (allrecipes) still work. It builds { recipesImport: 1, url, title, ld, text } and hands it to `finish`,
+// a snippet that uses `d`: the browser button opens the app with it; the iPhone Shortcut copies it.
+export function pageGrabber(finish){
+  return `let r=null;const f=o=>{if(!o||typeof o!='object')return null;const t=o['@type'];if(t==='Recipe'||(Array.isArray(t)&&t.includes('Recipe')))return o;for(const v of Array.isArray(o)?o:Object.values(o)){const x=f(v);if(x)return x}return null};`
+    + `for(const s of document.querySelectorAll('script[type="application/ld+json"]')){try{r=f(JSON.parse(s.textContent));if(r)break}catch(e){}}`
+    + `if(r){r=Object.assign({},r);['review','comment','aggregateRating','video','interactionStatistic'].forEach(k=>delete r[k])}`
+    + `const d={recipesImport:1,url:location.href,title:document.title,ld:r,text:r?'':document.body.innerText.slice(0,30000)};`
+    + finish;
+}
+// text from the clipboard → the page data the Shortcut copied, or null if it's something else
+export function parseImport(text){
+  const t = String(text || '').trim();
+  if (!t.startsWith('{') || !t.includes('recipesImport')) return null;
+  try {
+    const d = JSON.parse(t);
+    if (!d || d.recipesImport !== 1) return null;
+    return { url: typeof d.url === 'string' ? d.url : '', title: typeof d.title === 'string' ? d.title : '',
+      ld: d.ld && typeof d.ld === 'object' ? d.ld : null, text: typeof d.text === 'string' ? d.text : '' };
+  } catch { return null; }
+}
 // pull a JSON object out of a chatbot reply (```json fences, text around it)
 export function parseLooseJson(text){
   const t = String(text || '').replace(/```(?:json)?/gi, '');

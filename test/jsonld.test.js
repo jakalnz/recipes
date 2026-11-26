@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isoDuration, findRecipe, fromJsonLd, fromAi, parseLooseJson } from '../jsonld.js';
+import { isoDuration, findRecipe, fromJsonLd, fromAi, parseLooseJson, pageGrabber, parseImport } from '../jsonld.js';
 
 test('durations', () => {
   assert.equal(isoDuration('PT1H20M'), '1 hr 20 min');
@@ -43,4 +43,29 @@ test('AI replies, with or without code fences', () => {
   assert.equal(r.ingredients[1].heading, true);
   assert.deepEqual(r.unclear, ['1 or 2 tsp?']);
   assert.throws(() => parseLooseJson('sorry, no recipe'), /Couldn't find/);
+});
+
+test('the page script reads the Recipe off a page and the app reads back what it copied', () => {
+  const ld = { '@graph': [{ '@type': 'WebPage' }, { '@type': 'Recipe', name: 'Pavlova', recipeIngredient: ['4 egg whites'], review: [{ x: 1 }] }] };
+  const page = { document: { title: 'Pavlova | Site', querySelectorAll: () => [{ textContent: 'not json' }, { textContent: JSON.stringify(ld) }], body: { innerText: 'page text' } },
+    location: { href: 'https://www.allrecipes.com/recipe/1/pavlova/' } };
+  let copied = null;
+  new Function('document', 'location', 'completion', pageGrabber('completion(JSON.stringify(d));'))(page.document, page.location, s => { copied = s; });
+  const d = parseImport(copied);
+  assert.equal(d.url, 'https://www.allrecipes.com/recipe/1/pavlova/');
+  assert.equal(findRecipe(d.ld).name, 'Pavlova');
+  assert.equal(d.ld.review, undefined);
+  assert.equal(d.text, '');
+});
+test('a page without recipe data brings its text', () => {
+  const doc = { title: 'Blog', querySelectorAll: () => [], body: { innerText: 'Mix flour and water.' } };
+  let copied = null;
+  new Function('document', 'location', 'completion', pageGrabber('completion(JSON.stringify(d));'))(doc, { href: 'https://blog.example/x' }, s => { copied = s; });
+  assert.deepEqual(parseImport(copied), { url: 'https://blog.example/x', title: 'Blog', ld: null, text: 'Mix flour and water.' });
+});
+test('ordinary pasted text is not mistaken for Shortcut data', () => {
+  assert.equal(parseImport('https://www.allrecipes.com/recipe/1/'), null);
+  assert.equal(parseImport('{"found": true, "title": "Soup"}'), null);
+  assert.equal(parseImport('{"recipesImport": 1, broken'), null);
+  assert.equal(parseImport('2 cups flour\n1 egg'), null);
 });

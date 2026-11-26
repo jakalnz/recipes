@@ -20,7 +20,7 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
 import { PRESETS, LEVELS, presetById, checkRecipe, itemActive, openFlags, swapLine, avoidList, suitsAll } from './diet.js';
 import { readPaprika, parseIngredients, parseSteps, CATEGORIES } from './paprika.js';
 import { metricRecipe, scaleLine, niceQty, num } from './units.js';
-import { findRecipe, fromJsonLd, fromAi, parseLooseJson } from './jsonld.js';
+import { findRecipe, fromJsonLd, fromAi, parseLooseJson, pageGrabber, parseImport } from './jsonld.js';
 import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily, simplifySteps, simplifyPrompt, swapIdeas, swapPrompt, cleanSwaps } from './ai.js';
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 import { cleanSimple, missingNumbers, highlight } from './simplify.js';
@@ -1149,30 +1149,39 @@ const normTitle = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ')
 // the browser button: runs on a recipe page, reads its recipe data (or its text) and opens this app with it
 const APP_URL = () => location.origin + location.pathname;
 function bookmarklet(){
-  const code = `(()=>{let r=null;const f=o=>{if(!o||typeof o!='object')return null;const t=o['@type'];if(t==='Recipe'||(Array.isArray(t)&&t.includes('Recipe')))return o;for(const v of Array.isArray(o)?o:Object.values(o)){const x=f(v);if(x)return x}return null};`
-    + `for(const s of document.querySelectorAll('script[type="application/ld+json"]')){try{r=f(JSON.parse(s.textContent));if(r)break}catch(e){}}`
-    + `if(r){r=Object.assign({},r);['review','comment','aggregateRating','video','interactionStatistic'].forEach(k=>delete r[k])}`
-    + `const d={url:location.href,title:document.title,ld:r,text:r?'':document.body.innerText.slice(0,30000)};`
-    + `const u='${APP_URL()}#import='+encodeURIComponent(JSON.stringify(d));if(!window.open(u))location.href=u})()`;
-  return 'javascript:' + code;
+  return 'javascript:(()=>{' + pageGrabber(`const u='${APP_URL()}#import='+encodeURIComponent(JSON.stringify(d));if(!window.open(u))location.href=u`) + '})()';
 }
+// the iPhone Shortcut's "Run JavaScript on Web Page" code: Shortcuts waits for completion(), then copies what it's given
+const shortcutCode = () => pageGrabber('completion(JSON.stringify(d));');
 function openImport(){
   S.liveSheet = null; S.view = ''; S.importList = null; S.imPhotos = null; S.imPages = [];
   const ai = getAi(), ready = aiReady(ai);
   openSheet(`<h2>Add recipes</h2>
     <p class="note">${usingFamily(ai) ? `Using the family AI (up to ${+S.access.ai?.dailyLimit || 20} reads a day each).` : ready ? `AI on this phone: ${esc(PROVIDERS[ai.provider])}.` : 'No AI on this phone, so photos and links use the free Copy prompt route.'}</p>
     <h3>From a web page</h3>
-    ${touch() ? '<p class="note"><b>On iPhone:</b> in Safari tap Share, then Copy. Come back here and tap Paste link.</p>' : ''}
+    ${touch() ? '<p class="note"><b>On iPhone:</b> in Safari tap Share, then Copy (or Save to Recipes, if you\'ve set up the Shortcut below). Come back here and tap Paste.</p>' : ''}
     <label>Recipe link<input id="im_url" type="url" inputmode="url" placeholder="https://…" autocomplete="off"></label>
-    <div class="btns" style="margin-top:6px">${touch() ? '<button class="btn tag" data-a="imPasteLink">Paste link</button>' : ''}<button class="btn ${touch() ? '' : 'tag'}" data-a="imUrl">Read the page</button><button class="btn" data-a="imUrlPrompt">Copy prompt for a chatbot</button></div>
+    <div class="btns" style="margin-top:6px">${touch() ? '<button class="btn tag" data-a="imPasteLink">Paste</button>' : ''}<button class="btn ${touch() ? '' : 'tag'}" data-a="imUrl">Read the page</button><button class="btn" data-a="imUrlPrompt">Copy prompt for a chatbot</button></div>
     <p class="note">Most recipe sites are read for free.${ready ? ' If a page has no recipe data, the AI reads it instead.' : ''}</p>
     <details class="sub-d"><summary>Browser button: one tap on any recipe page (free)</summary>
       <p class="note">Most recipe sites include the recipe in a standard form. This button reads it straight off the page, with no AI needed. For other pages it brings the page text across.</p>
       <p><b>On a computer:</b> drag this to your bookmarks bar: <a class="btn sm tag" href="${esc(bookmarklet())}" onclick="return false">Save to Recipes</a></p>
       <p><b>On a phone:</b> 1. Bookmark any page. 2. <button class="link" data-a="imCopyBm">Copy the button code</button>. 3. Edit the bookmark: name it <b>Save to Recipes</b> and paste the code over its address.
         Then on a recipe page, <b>Android Chrome:</b> type “Save to Recipes” in the address bar and tap the bookmark.</p>
-      <p class="note">On iPhone, use Paste link instead. The button opens the recipe in Safari rather than the Recipes app on your home screen, and Safari keeps its own separate sign-in.</p>
+      <p class="note">On iPhone, use the Shortcut below instead. The button opens the recipe in Safari rather than the Recipes app on your home screen, and Safari keeps its own separate sign-in.</p>
       <p class="note">On Android you can also Share a recipe page to this app once it's installed.</p>
+    </details>
+    <details class="sub-d"><summary>iPhone: Save to Recipes from Safari's Share menu (free)</summary>
+      <p class="note">For sites that won't let the app read their links, such as allrecipes. The Shortcut reads the recipe from the page you have open in Safari, so nothing gets blocked. It takes about two minutes to set up, once.</p>
+      <ol class="note">
+        <li><button class="link" data-a="imCopyShortcut">Copy the Shortcut code</button>.</li>
+        <li>Open the <b>Shortcuts</b> app, tap <b>+</b>, and name the new shortcut <b>Save to Recipes</b>.</li>
+        <li>Add the action <b>Run JavaScript on Web Page</b>. Select all the code in it and paste over it.</li>
+        <li>Add the action <b>Copy to Clipboard</b> underneath.</li>
+        <li>Tap the ⓘ (or the shortcut's name, then <b>Details</b>), turn on <b>Show in Share Sheet</b>, and set it to receive <b>Safari web pages</b>. Tap Done.</li>
+        <li>In the iPhone's <b>Settings</b>, go to <b>Apps</b> (or Shortcuts), then <b>Shortcuts</b>, then <b>Advanced</b>, and turn on <b>Allow Running Scripts</b>.</li>
+      </ol>
+      <p class="note"><b>To use it:</b> on a recipe in Safari, tap Share, then <b>Save to Recipes</b> (tap Allow the first time on each site). Then open this app, tap Add recipes and tap <b>Paste</b>.</p>
     </details>
     <h3>From a photo</h3>
     <p class="note">A cookbook page, a magazine or a handwritten family card. ${touch() ? 'Take a photo of each page, up to 4.' : 'Up to 4 photos for a long recipe.'}</p>
@@ -1209,7 +1218,7 @@ function drawPages(){
 const imStatus = m => { const s = $('#im_status'); if (s) s.textContent = m; else if (m) toast(m); };
 // what to do when a link can't be read: copy the recipe off the page yourself
 const linkHelp = () => touch()
-  ? 'Open the recipe in Safari or Chrome, press and hold on the ingredients, drag to select down to the end of the method, tap Copy, then paste it into the Text box below.'
+  ? 'On iPhone, use the Save to Recipes Shortcut (set it up under "iPhone: Save to Recipes" below). Or open the recipe in Safari or Chrome, press and hold on the ingredients, drag to select down to the end of the method, tap Copy, then paste it into the Text box below.'
   : 'Open the recipe in your browser and use the Save to Recipes browser button (under the link box), or select the ingredients and method, copy them and paste them into the Text box below.';
 const linkFail = (host, why) => `Couldn't read ${host || 'that page'}: ${why}. Instead: ${linkHelp()}`;
 async function runAi(input, from, extra = {}, onFail = null){
@@ -1264,9 +1273,13 @@ function incomingImport(){
   if (!data) return;
   history.replaceState(null, '', location.pathname + (new URLSearchParams(location.search).has('emu') ? '?emu' : ''));
   S.tab = 'recipes'; render();
+  useImport(data);
+}
+// page data from the browser button, Android's Share menu or the iPhone Shortcut → the recipe form, or the importer to finish it
+function useImport(data){
   const recipe = data.ld && findRecipe(data.ld);
   if (recipe){ openRecipeForm(null, { ...fromJsonLd(recipe, data.url), from: hostOf(data.url) || 'the web page' }); return; }
-  openImport();
+  if (!$('#im_url')) openImport();
   if (data.url) $('#im_url').value = data.url;
   if (data.text) $('#im_text').value = (data.title ? data.title + '\n\n' : '') + data.text;
   if (data.url && !data.text) readLink(data.url);
@@ -1535,6 +1548,8 @@ const A = {
   imPasteLink: async () => {
     let clip = '';
     try { clip = await navigator.clipboard.readText(); } catch (e){ imStatus("Couldn't read the clipboard. Press and hold in the link box and choose Paste."); return; }
+    const data = parseImport(clip);   // copied by the Save to Recipes Shortcut
+    if (data){ useImport(data); return; }
     const url = (clip.match(/https?:\/\/\S+/) || [])[0];
     if (!url){ imStatus('No link on the clipboard. In Safari tap Share, then Copy, and come back.'); return; }
     $('#im_url').value = url; readLink(url); },
@@ -1558,8 +1573,12 @@ const A = {
       toast('Photo deleted'); viewRecipe(r.id);
     } catch (e){ console.error(e); toast("Couldn't delete the photo"); } },
   imPhotoPrompt: () => copyForChatbot('photo', {}, 'Prompt copied. In ChatGPT, Claude or Gemini, attach your photo, paste the prompt, then paste the reply below.'),
-  imText: () => { const text = $('#im_text').value.trim(); if (!text){ imStatus('Paste a recipe first'); return; } runAi({ text }, 'pasted text'); },
+  imText: () => { const text = $('#im_text').value.trim(); if (!text){ imStatus('Paste a recipe first'); return; }
+    const data = parseImport(text); if (data){ useImport(data); return; }
+    runAi({ text }, 'pasted text'); },
+  imCopyShortcut: async () => { try { await navigator.clipboard.writeText(shortcutCode()); toast('Shortcut code copied'); } catch (e){ toast("Couldn't copy"); } },
   imTextPrompt: () => { const text = $('#im_text').value.trim(); if (!text){ imStatus('Paste a recipe first'); return; }
+    const data = parseImport(text); if (data){ useImport(data); return; }
     copyForChatbot('text', { text }, 'Prompt copied, with the recipe in it. Paste it into any chatbot, then paste its reply below.'); },
   imReply: () => {
     try { const j = parseLooseJson($('#im_reply').value);
