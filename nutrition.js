@@ -14,7 +14,7 @@ const UNITS = [
   ['tbsp', /^(Tbsp|Tablespoons?)\b/], ['tsp', /^(Tsp|Teaspoons?)\b/],
   ['pinch', /^(pinch(es)?|dash(es)?|sprinkle)\b/i],
   ['clove', /^cloves?\b/i], ['slice', /^slices?\b/i], ['bunch', /^bunch(es)?\b/i], ['handful', /^handfuls?\b/i],
-  ['can', /^(cans?|tins?)\b/i], ['packet', /^(packets?|packages?|pkts?|sachets?)\b/i], ['each', /^(rashers?|fillets?|pieces?|whole|medium|large|small|big)\b/i],
+  ['can', /^(cans?|tins?)\b/i], ['packet', /^(packets?|packages?|pkts?|sachets?|jars?|bottles?|tubs?|pottles?|cartons?|bags?|blocks?)\b/i], ['each', /^(rashers?|fillets?|pieces?|whole|medium|large|small|big)\b/i],
 ];
 // counted as nothing (salt matters for sodium, but recipes rarely give a real amount)
 const NEGLIGIBLE = /^(?:(?:kosher|sea|table|flaky|fine|rock|iodised|cooking)\s+)?salt\b|^salt (and|&) pepper|^(?:freshly\s+)?(?:ground\s+)?(?:black|white)?\s*pepper(corns)?$|^(?:ground |cracked )?(black|white) pepper\b|(^|\b(cold|warm|hot|boiling|iced|tap)\s+)water\b(?! ?(chestnut|cress))|^ice\b|\b(cooking|oil) spray\b|^spray oil/i;
@@ -331,7 +331,13 @@ const DENS = [[/panko/, 0.2], [/breadcrumb/, 0.45], [/flour|cornflour|starch/, 0
   [/milk|cream|stock|juice|sauce|vinegar|water|yoghurt|yogurt/, 1.03]];
 const densityOf = (food, item) => food?.d || (DENS.find(([re]) => re.test(`${item} ${food?.name || ''}`.toLowerCase())) || [])[1] || null;
 
-export function toGrams(p, food, each){
+// canned beans, chickpeas and lentils are drained and rinsed: about 60% of the can's net weight is left
+export const DRAINED = 0.6;
+const drainedLegume = food => /\bdrained\b/i.test(food?.name || '') && /^(bean|chickpea|lentil)/i.test(food?.name || '');
+export const isPackLine = p => p.unit === 'can' || p.unit === 'packet';
+
+// pack: one pack's size from Shop, { g } or { ml }, used for "1 can" / "½ packet"
+export function toGrams(p, food, each, pack){
   const u = p.unit, q = p.qty;
   if (NEGLIGIBLE.test(p.item) || u === 'pinch') return { g: 0, how: 'negligible' };
   if (q == null) return { g: null, how: 'no amount' };
@@ -349,6 +355,13 @@ export function toGrams(p, food, each){
   if (u === 'clove') return { g: q * 4, how: 'clove ≈ 4 g', approx: true };
   if (u === 'slice') return { g: q * (food?.m?.each || 30), how: 'slice', approx: true };
   if (u === 'bunch' || u === 'handful') return { g: q * (u === 'bunch' ? 50 : 20), how: `${u} (rough)`, approx: true };
+  if ((u === 'can' || u === 'packet') && (pack?.g > 0 || pack?.ml > 0)){
+    const dens = pack.g ? 1 : densityOf(food, p.item);
+    let g = q * (pack.g || pack.ml * (dens || 1)), how = `${u} from Shop: ${pack.g ? `${Math.round(pack.g)} g` : `${Math.round(pack.ml)} ml`}`;
+    const approx = !pack.g && !dens;
+    if (u === 'can' && drainedLegume(food)){ g *= DRAINED; how += `, drained ≈ ${DRAINED * 100}%`; }
+    return { g, how, approx: approx || u === 'can' && drainedLegume(food) };
+  }
   if (u === 'can' || u === 'packet') return { g: null, how: `size of ${u} unknown` };
   // a count: "2 eggs", "1 onion", "10 bacon rashers"
   if (each) return { g: q * each, how: `each ≈ ${each} g`, approx: true };
@@ -360,7 +373,8 @@ export function toGrams(p, food, each){
 
 /* ---------- a whole recipe ---------- */
 // overrides: { [lineIndex]: { foodId?, grams?, skip? } }
-export function computeRecipe(recipe, index, overrides = {}){
+// opts.packFor(parsedLine, lineIndex) → one pack's size { g } or { ml } (from Shop), or null
+export function computeRecipe(recipe, index, overrides = {}, opts = {}){
   const lines = [], total = Object.fromEntries(FIELDS.map(f => [f, 0]));
   let weight = 0;
   (recipe.ingredients || []).forEach((ing, i) => {
@@ -378,7 +392,10 @@ export function computeRecipe(recipe, index, overrides = {}){
     if (!best){ L.status = 'unmatched'; lines.push(L); return; }
     L.food = best; L.alts = cand.slice(1).map(c => c.food); L.pinned = !!cand[0].pinned;
     L.confident = !!o.foodId || !!cand[0].pinned || cand[0].hit === cand[0].of;
-    const g = o.grams != null ? { g: +o.grams, how: 'entered' } : toGrams(p, best, cand[0].each);
+    L.packLine = isPackLine(p);
+    const pack = L.packLine && o.grams == null && opts.packFor ? opts.packFor(p, i) : null;
+    if (pack) L.pack = pack;
+    const g = o.grams != null ? { g: +o.grams, how: 'entered' } : toGrams(p, best, cand[0].each, pack);
     L.grams = g.g; L.how = g.how; L.approx = !!g.approx && o.grams == null;
     if (g.how === 'negligible'){ L.status = 'skipped'; lines.push(L); return; }
     if (g.g == null){ L.status = 'no grams'; lines.push(L); return; }

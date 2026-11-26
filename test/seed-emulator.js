@@ -27,4 +27,17 @@ for (const [id, name, cat, onList, ticked] of [['eggs', 'Eggs', 'Dairy & Eggs', 
   ['garlic', 'Garlic', 'Fruit & Veg', true, true], ['milk', 'Milk', 'Dairy & Eggs', true, false]])
   await put(`items/${id}`, { name: str(name), cat: str(cat), misc: { booleanValue: false }, onList: { booleanValue: onList }, ticked: { booleanValue: ticked },
     qty: str(''), note: str(onList ? 'the blue one' : ''), count: { integerValue: '3' }, pos: map({}) });
+// pack sizes: one with a size, one without (fill it in), a brand name to confirm, a multipack, a per-kg item and a one-off
+const num = n => ({ doubleValue: n });
+for (const [id, name, cat, extra] of [['blackbeans', 'Black beans (can)', 'Tins & Jars', { size: str('400g'), packG: num(400) }],
+  ['chickpeas', 'Chickpeas', 'Tins & Jars', {}], ['coco', 'Pams coconut cream', 'Tins & Jars', { size: str('400ml'), packMl: num(400) }],
+  ['tomcan', 'Chopped tomatoes', 'Tins & Jars', { size: str('4x400g'), packG: num(1600) }], ['mince', 'Beef mince', 'Meat & Fish', { unit: str('kg') }],
+  ['kidney', 'Kidney beans', 'Tins & Jars', { misc: { booleanValue: true }, size: str('420g'), packG: num(420) }]])
+  await put(`items/${id}`, { name: str(name), cat: str(cat), misc: { booleanValue: false }, onList: { booleanValue: false }, ticked: { booleanValue: false },
+    qty: str(''), note: str(''), count: { integerValue: '1' }, pos: map({}), ...extra });
+await put('rxRecipes/chilli', { title: str('Black bean chilli'), cats: arr(['Mains']), servings: { integerValue: '4' },
+  ingredients: arr(['500 g beef mince', '1 onion, diced', '1 can black beans, drained and rinsed', '1 can chickpeas, drained', '½ can coconut cream',
+    '1 tin chopped tomatoes', '1 can red kidney beans'].map(o => map({ original: o }))),
+  steps: arr(['Brown the mince and onion.', 'Add everything else and simmer for 20 minutes.']),
+  createdBy: map({ uid: 'seed', name: 'Seed' }) });
 console.log('Seeded: sign in as shop.one@example.com (Shop + admin) or aunt.test@example.com (another household).');

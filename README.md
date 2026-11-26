@@ -58,3 +58,8 @@ node scripts/upload-foods.mjs          # or --emu for the emulator
 node scripts/nutrition-report.mjs <export.paprikarecipes>   # check how lines are matched
 ```
 `nutrition.js` reads each ingredient line, matches it to a food and converts the amount to grams. Common ingredients are matched to fixed foods; everything else goes through a keyword search. Grams come from cup and spoon weights, densities, or typical sizes. Anyone can correct a line in the app.
+
+**Pack sizes from Shop** (`packs.js`): "1 can black beans" or "½ packet cream cheese" uses the pack size (`packG` / `packMl`) of the matching Shop item, and one unit of a multipack (`6x375ml` → 375 ml). Canned beans, chickpeas and lentils count as drained, at 60% of the can. Items priced per kg and one-off items are never used.
+- Exact name matches are used straight away. Close matches are shown for a Shop account to confirm or reject.
+- Matches, with a copy of each pack size, are kept on the Shop household's `rxHouseholds` doc (`packs`, `packNo`), so households that can't read Shop get the same numbers.
+- Recipes only reads `items`; it never writes pack sizes. Settings → **Pack sizes** lists the cans and packets that still need a size set in Shop.

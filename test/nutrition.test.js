@@ -74,6 +74,26 @@ test('overrides: choose a food, enter grams, or leave a line out', () => {
   assert.equal(c.lines[1].status, 'skipped');
 });
 
+test('cans and packets use the pack size from Shop, a fraction of it, and drained beans', () => {
+  const t2 = makeIndex({ ...table, foods: [...table.foods,
+    ['nz:X10047', 'Bean, black, canned in salted water (brine), drained, composite', [11, 0.6, 7, 0.7, 0.1, 7.7, 405, 210], null, 0],
+    ['nz:C1', 'Coconut, milk, standard, canned', [3, 2, 0, 17, 15, 1.6, 700, 15], 1.02, 0]] });
+  const rec = { servings: 2, ingredients: [{ original: '1 can black beans, drained' }, { original: '½ can coconut milk' },
+    { original: '1 can (400 g) coconut milk' }, { original: '2 packets mystery mix' }] };
+  const sizes = { 'black beans': { g: 400 }, 'coconut milk': { ml: 400 } };
+  const r = computeRecipe(rec, t2, {}, { packFor: p => sizes[p.item] || null });
+  assert.equal(r.lines[0].grams, 240);                       // 400 g × 60% drained
+  assert.equal(r.lines[0].approx, true);
+  assert.equal(Math.round(r.lines[1].grams), 204);           // ½ × 400 ml × 1.02 g/ml
+  assert.equal(r.lines[2].grams, 400);                       // a weight in the line wins
+  assert.equal(r.lines[2].pack, undefined);
+  // without pack sizes, cans can't be counted
+  assert.equal(computeRecipe(rec, t2).lines[0].status, 'no grams');
+  // grams entered by hand win over the pack
+  assert.equal(computeRecipe(rec, t2, { 0: { grams: 300 } }, { packFor: p => sizes[p.item] || null }).lines[0].grams, 300);
+  assert.equal(parseLine('1 jar pesto').unit, 'packet');
+});
+
 test('choices in one line: "or", "/", "(or …)", with a shared last word spread', () => {
   const o = l => parseLine(l).options;
   assert.deepEqual(o('50 g butter or olive oil'), ['butter', 'olive oil']);

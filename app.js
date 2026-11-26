@@ -24,7 +24,8 @@ import { findRecipe, fromJsonLd, fromAi, parseLooseJson } from './jsonld.js';
 import { getAi, setAi, aiReady, canReadLinks, extractRecipe, copyPrompt, resizeImage, PROVIDERS, CLAUDE_MODELS, setFamilyAi, usingFamily, simplifySteps, simplifyPrompt, swapIdeas, swapPrompt, cleanSwaps } from './ai.js';
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 import { cleanSimple, missingNumbers, highlight } from './simplify.js';
-import { makeIndex, computeRecipe, searchFoods, matchFood, parseLine } from './nutrition.js';
+import { makeIndex, computeRecipe, searchFoods, matchFood, parseLine, isPackLine } from './nutrition.js';
+import { packKey, packOf, perKg, matchPack, entryOf, sameEntry, packText } from './packs.js';
 import { MEALS, MEAL_LABEL, iso, fromIso, addDays, weekStart, weekDays, dayShort, dayLong, shoppingList, matchShop, guessCategory, DEFAULT_PANTRY, isPantry } from './planner.js';
 
 /* ---------- helpers (same as Shop) ---------- */
@@ -180,11 +181,12 @@ async function start(){
   $('#login').hidden = true; $('#app').hidden = false;
   unsubs.push(onSnapshot(accessRef(), s => { S.access = s.data() || {}; S.hid = S.access.members?.[S.user.email] || ''; if (!S.hid) return notAllowed();
     setFamilyAi(S.access.ai?.enabled ? familyRead : null); render(); if (S.view === 'settings') openSettings(); }, denied));
-  unsubs.push(onSnapshot(collection(db, 'rxRecipes'), s => { S.recipes = s.docs.map(d => ({ id: d.id, ...d.data() })); convertOld(); render(); }, denied));
+  unsubs.push(onSnapshot(collection(db, 'rxRecipes'), s => { S.recipes = s.docs.map(d => ({ id: d.id, ...d.data() })); convertOld(); schedulePackSync(); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxPeople'), s => { S.people = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name)); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxMembers'), s => { S.members = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); render(); }, denied));
   unsubs.push(onSnapshot(collection(db, 'rxFamilyMeals'), s => { S.familyMeals = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.date.localeCompare(b.date)); render(); if (S.view === 'fm') viewFamilyMeal(S.fmId); }, denied));
   unsubs.push(onSnapshot(doc(db, 'rxHouseholds', S.hid), s => { S.household = s.data() || {}; }, () => {}));
+  watchPacks();
   watchWeek();
   unsubs.push(() => S.unsubWeek?.());
   // keep my account record up to date
@@ -706,8 +708,9 @@ function nutritionSection(r){
     loadFoods();
     return `<h3>Nutrition</h3><p class="note">Working out nutrition…</p>`;
   }
-  const N = computeRecipe(r, S.foods, fixesFor(r));
+  const N = computeRecipe(r, S.foods, fixesFor(r), { packFor });
   S.nutCache = { id: r.id, N };
+  const packsToDo = N.lines.filter(l => l.packLine && !l.pack).length;
   const view = S.nutView || 'serving';
   const base = view === 'serving' && N.perServing ? N.perServing : view === '100' && N.per100 ? N.per100 : N.total;
   const label = base === N.perServing ? `per serving (about ${Math.round(N.servingGrams)} g)` : base === N.per100 ? 'per 100 g' : `whole recipe (${Math.round(N.weight)} g)`;
@@ -732,10 +735,11 @@ function nutritionSection(r){
     </div>
     ${bad.length ? `<p class="warnline">${bad.length} ingredient${bad.length > 1 ? 's' : ''} couldn't be worked out and ${bad.length > 1 ? 'are' : 'is'} not included. Open the breakdown and tap Fix.</p>` : ''}
     ${unsure.length ? `<p class="note">${unsure.length} match${unsure.length > 1 ? 'es' : ''} marked ? may be the wrong food. Worth a look.</p>` : ''}
+    ${packsToDo ? `<p class="note">${packsToDo > 1 ? `${packsToDo} cans or packets` : '1 can or packet'} without a size from Shop. <button class="link" data-a="packView">Pack sizes</button></p>` : ''}
     <details class="sub-d" ${S.nutOpen === r.id ? 'open' : ''} data-nut="${r.id}"><summary>How this was worked out</summary>
       <ul class="nutlines">${N.lines.map(l => `<li class="s-${l.status.replace(' ', '-')}"><span class="st" aria-label="${esc(l.status)}">${icon[l.status] || ''}</span>
         <span class="grow">${esc(l.text)}<br><small>${l.food ? `${esc(l.food.name.slice(0, 70))} <span class="pill plain">${SRC[l.food.src]}</span> · ${l.grams != null ? `${l.approx ? '≈' : ''}${Math.round(l.grams)} g` : esc(l.how || '')}${l.values ? ` · ${g1(l.values.carbs)} g carbs · ${g1(l.values.fat)} g fat` : ''}`
-          : esc(l.status === 'unmatched' ? 'No matching food found' : l.how || '')}</small></span>
+          : esc(l.status === 'unmatched' ? 'No matching food found' : l.how || '')}</small>${packNote(l)}</span>
         <button class="btn sm" data-a="nutFix" data-id="${r.id}" data-i="${l.i}">${l.status === 'ok' || l.status === 'skipped' || l.status === 'no amount' ? 'Change' : 'Fix'}</button></li>`).join('')}</ul>
       <p class="note">Worked out from raw ingredient weights, so water lost in cooking isn't counted. Sources: ${N.sources.map(s => SRC_LONG[s]).join(', ') || 'none'}.
         NZ data: New Zealand FOODfiles 2024, © Plant & Food Research and Ministry of Health. AU data © Food Standards Australia New Zealand (CC BY 4.0). US data: USDA FoodData Central (public domain).</p>
@@ -777,6 +781,117 @@ async function saveFix(val){
 }
 
 /* ---------- meal planner ---------- */
+/* ---------- pack sizes from Shop: "1 can black beans" counts the can's weight ---------- */
+// Shop accounts read Shop's items live. Matches, and a copy of each matched item's pack size, are saved on the Shop
+// household's rxHouseholds doc, so every household gets the same nutrition. Nothing is ever written to Shop's items.
+const shopHid = () => S.access?.members?.[(S.access?.shop || [])[0]] || '';
+const packRef = () => doc(db, 'rxHouseholds', shopHid());
+function watchPacks(){
+  S.packSaved = null; S.shopItems = null;
+  if (!shopHid()) return;
+  unsubs.push(onSnapshot(packRef(), s => { const d = s.data() || {}; S.packSaved = { packs: d.packs || {}, packNo: d.packNo || {} }; packChanged(); }, e => console.error(e)));
+  if (isAdmin()) unsubs.push(onSnapshot(collection(db, 'items'), s => { S.shopItems = s.docs.map(d => ({ id: d.id, ...d.data() })); packChanged(); }, e => console.error(e)));
+}
+let packRedraw = 0;
+function packChanged(){
+  schedulePackSync();
+  clearTimeout(packRedraw); packRedraw = setTimeout(() => S.liveSheet?.(), 300);
+}
+// state: ok (size known) · nosize (matched, no pack size in Shop) · ask (a guess to confirm) · none (no Shop item) · wait (no Shop account has looked yet)
+function packState(key){
+  const saved = S.packSaved || {};
+  if (S.shopItems){
+    const m = matchPack(key, S.shopItems, saved);
+    if (!m) return { state: 'none' };
+    if (!m.sure) return { state: 'ask', match: m };
+    const e = entryOf(m, m.confirmed);
+    return { state: e.g || e.ml ? 'ok' : 'nosize', entry: e };
+  }
+  const e = saved.packs?.[key];
+  return !e ? { state: 'wait' } : { state: e.g || e.ml ? 'ok' : 'nosize', entry: e };
+}
+function packFor(p){ const s = packState(packKey(p.item)); return s.state === 'ok' ? { g: s.entry.g, ml: s.entry.ml, name: s.entry.name } : null; }
+// every can or packet line in the book that isn't already given grams by hand: key → { key, name, uses }
+function packLines(){
+  const out = new Map();
+  for (const r of S.recipes){
+    const fix = r.nutritionFix || {};
+    for (const ing of r.ingredients || []){
+      if (ing.heading || fix[ing.original]?.skip || fix[ing.original]?.grams != null) continue;
+      const p = parseLine(ing.original); if (!isPackLine(p)) continue;
+      const k = packKey(p.item); if (!k) continue;
+      const x = out.get(k) || { key: k, name: p.item, uses: [] };
+      if (!x.uses.some(u => u.id === r.id)) x.uses.push({ id: r.id, title: r.title || 'Untitled' });
+      out.set(k, x);
+    }
+  }
+  return out;
+}
+// a Shop account keeps the saved copy in step with Shop: new exact matches, changed pack sizes, deleted items
+let packTimer = 0;
+function schedulePackSync(){ if (!isAdmin()) return; clearTimeout(packTimer); packTimer = setTimeout(syncPacks, 1500); }
+async function syncPacks(){
+  if (!isAdmin() || !S.shopItems || !S.packSaved || !S.recipes.length) return;
+  const saved = S.packSaved, upd = {};
+  for (const k of new Set([...packLines().keys(), ...Object.keys(saved.packs)])){
+    const m = matchPack(k, S.shopItems, saved), cur = saved.packs[k];
+    const want = m?.sure ? entryOf(m, m.confirmed) : null;
+    if (want && !sameEntry(want, cur)) upd[k] = want;
+    else if (!want && cur) upd[k] = deleteField();
+  }
+  if (!Object.keys(upd).length) return;
+  try { await setDoc(packRef(), { packs: upd }, { merge: true }); } catch (e){ console.error(e); }
+}
+async function packAnswer(key, id, yes){
+  const it = S.shopItems?.find(i => i.id === id); if (!it || !key) return;
+  const data = yes ? { packs: { [key]: entryOf({ item: it }, true) }, packNo: { [key]: arrayRemove(id) } } : { packNo: { [key]: arrayUnion(id) } };
+  if (!yes && S.packSaved?.packs?.[key]?.id === id) data.packs = { [key]: deleteField() };
+  try { await setDoc(packRef(), data, { merge: true }); toast(yes ? `Using Shop's ${it.name}` : `Not ${it.name}`); }
+  catch (e){ console.error(e); toast("Couldn't save that"); }
+}
+const sizeOf = it => { const t = packText(packOf(it)); return it.size ? ` (${esc(it.size)})` : t ? ` (${t})` : ''; };
+const askButtons = (k, it) => `<button class="btn sm pri" data-a="packYes" data-k="${esc(k)}" data-id="${esc(it.id)}">Yes</button>
+  <button class="btn sm" data-a="packNo" data-k="${esc(k)}" data-id="${esc(it.id)}">No</button>`;
+// the line under a can or packet in the nutrition breakdown
+function packNote(l){
+  if (!l.packLine) return '';
+  const k = packKey(l.item), st = packState(k), it = st.match?.item || st.entry;
+  const no = isAdmin() && it ? ` <button class="link" data-a="packNo" data-k="${esc(k)}" data-id="${esc(it.id)}">wrong item?</button>` : '';
+  if (st.state === 'ok') return `<br><small>${esc(l.how || '')} · ${esc(st.entry.name)}${no}</small>`;
+  if (st.state === 'nosize') return `<br><small>Shop's ${esc(it.name)} has no pack size. Set “Pack size” on it in Shop; the next receipt scan will also fill it in.${no}</small>`;
+  if (st.state === 'ask') return `<br><small>Is this Shop's <b>${esc(it.name)}</b>${sizeOf(it)}? ${askButtons(k, it)}</small>`;
+  if (st.state === 'none') return `<br><small>No Shop item matches “${esc(l.item)}”. <button class="link" data-a="packView">Link one</button></small>`;
+  return `<br><small>No Shop item linked yet. A Shop account can link one under Pack sizes.</small>`;
+}
+// Pack sizes: what to fill in, in Shop, so cans and packets can be counted
+function openPacks(){
+  S.liveSheet = openPacks; S.view = '';
+  const rows = [...packLines().values()].map(x => ({ ...x, st: packState(x.key) })).sort((a, b) => a.key.localeCompare(b.key));
+  const order = { ask: 0, none: 1, nosize: 2, wait: 3 };
+  const need = rows.filter(x => x.st.state !== 'ok').sort((a, b) => order[a.st.state] - order[b.st.state] || a.key.localeCompare(b.key)), done = rows.filter(x => x.st.state === 'ok');
+  const uses = x => `<small>In ${x.uses.slice(0, 3).map(u => `<button class="link" data-a="viewRecipe" data-id="${u.id}">${esc(u.title)}</button>`).join(', ')}${x.uses.length > 3 ? ` and ${x.uses.length - 3} more` : ''}</small>`;
+  const shopNames = (S.shopItems || []).filter(i => !i.misc && !perKg(i)).map(i => i.name);
+  const row = x => {
+    const it = x.st.match?.item || x.st.entry, k = esc(x.key);
+    const what = x.st.state === 'ask' ? `Is it Shop's <b>${esc(it.name)}</b>${sizeOf(it)}? ${askButtons(x.key, it)}`
+      : x.st.state === 'nosize' ? `Set “Pack size” on <b>${esc(it.name)}</b> in Shop. The next receipt scan will also fill it in.${isAdmin() ? ` <button class="link" data-a="packNo" data-k="${k}" data-id="${esc(it.id)}">wrong item?</button>` : ''}`
+      : x.st.state === 'none' ? (isAdmin() ? `No Shop item matches. Add it in Shop, or link one: <input list="packItems" data-a-change="packLink" data-k="${k}" placeholder="Shop item name" aria-label="Shop item for ${esc(x.name)}">` : 'No Shop item matches yet.')
+      : 'No Shop item linked yet. A Shop account can link one here.';
+    return `<div class="srow"><div class="grow"><b>${esc(x.name)}</b><br><small>${what}</small><br>${uses(x)}</div></div>`;
+  };
+  openSheet(`<h2>Pack sizes</h2>
+    <p class="note">For recipe lines like “1 can black beans” or “½ packet cream cheese”, nutrition uses the pack size of the matching Shop item. Canned beans, chickpeas and lentils count as drained (about 60% of the can).</p>
+    ${!shopHid() ? '<p class="warnline">No Shop household is set up.</p>' : ''}
+    <h3>To fill in (${need.length})</h3>
+    ${need.map(row).join('') || '<p class="note">Nothing. Every can and packet has a size.</p>'}
+    ${done.length ? `<details class="sub-d"><summary>Sizes known (${done.length})</summary>
+      ${done.map(x => `<div class="srow"><div class="grow"><b>${esc(x.name)}</b> → ${esc(x.st.entry.name)} · ${esc(packText(x.st.entry))}${x.st.entry.ok ? ' <span class="pill plain">confirmed</span>' : ''}
+        ${isAdmin() ? ` <button class="link" data-a="packNo" data-k="${esc(x.key)}" data-id="${esc(x.st.entry.id)}">wrong item?</button>` : ''}<br>${uses(x)}</div></div>`).join('')}</details>` : ''}
+    ${isAdmin() ? `<datalist id="packItems">${[...new Set(shopNames)].sort().map(n => `<option value="${esc(n)}">`).join('')}</datalist>` : ''}
+    <p class="note">Recipes only reads Shop. It never changes Shop's items.</p>
+    <div class="btns"><button class="btn pri" data-a="closeSheet">Done</button></div>`);
+}
+
 const daysRef = () => collection(db, 'rxPlans', S.hid, 'days');
 const uid8 = () => Math.random().toString(36).slice(2, 10);
 const recipeById = id => S.recipes.find(r => r.id === id);
@@ -1244,6 +1359,8 @@ function openSettings(){
     <div class="mini"><input id="newEmail" type="email" placeholder="their.email@gmail.com" autocomplete="off">
       <select id="newEmailHh" aria-label="Household">${Object.keys(hs).sort().map(x => `<option value="${x}">${esc(hs[x])}</option>`).join('')}</select>
       <button class="btn sm pri" data-a="addMember">Add</button></div>` : ''}
+    <h3>Pack sizes from Shop</h3><p class="note">Nutrition counts “1 can” or “½ packet” using the pack size of the matching Shop item. See which ones still need a size.</p>
+    <div class="btns" style="margin-top:6px"><button class="btn sm" data-a="packView">Pack sizes</button></div>
     ${standalone() ? '' : `<h3>App</h3><p class="note">Install Recipes so it opens full screen and shows up in your phone's app search, like Shop.</p>
     <div class="btns" style="margin-top:6px"><button class="btn sm" data-a="install">Install as an app</button></div>`}
     ${isAdmin() ? `<h3>Family AI (shared key)</h3>
@@ -1280,6 +1397,9 @@ async function adminWrite(fn, ok){
 const A = {
   tab: t => { S.tab = t.dataset.tab; LS.set('tab', S.tab); render(); },
   closeSheet, settings: openSettings, install,
+  packView: () => openPacks(),
+  packYes: t => packAnswer(t.dataset.k, t.dataset.id, true),
+  packNo: t => packAnswer(t.dataset.k, t.dataset.id, false),
   signout: () => { closeSheet(); signOut(auth); },
   addRecipe: () => openRecipeForm(null),
   viewRecipe: t => viewRecipe(t.dataset.id),
@@ -1480,6 +1600,8 @@ const CH = {
   srName: t => { const x = S.shop.rows[+t.dataset.n]; x.name = t.value.trim() || x.name;
     const m = S.shop.items.length ? matchShop(x.name, S.shop.items) : null; x.matchId = m?.item.id || ''; x.cat = guessCategory(x.name, S.shop.cats); drawShopList(); },
   srCat: t => { S.shop.rows[+t.dataset.n].cat = t.value; },
+  packLink: t => { const v = t.value.trim().toLowerCase(), it = (S.shopItems || []).find(i => !i.misc && !perKg(i) && i.name.toLowerCase() === v);
+    if (it) packAnswer(t.dataset.k, it.id, true); else if (v) toast('Pick a Shop item from the list'); },
   srOpt: t => CH.srName(t),
   scaleSet: t => { const k = readScale(t.value); if (k) S.scales[t.dataset.id] = k; else toast('Type a number, like 2 or 0.5'); S.liveSheet?.(); },
   scaleServes: t => { const r = S.recipes.find(x => x.id === t.dataset.id), n = num(String(t.value).replace(',', '.'));
