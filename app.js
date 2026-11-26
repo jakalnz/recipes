@@ -1207,14 +1207,23 @@ function drawPages(){
       ${n ? '<button class="btn" data-a="imPagesClear">Start again</button>' : ''}</div>`;
 }
 const imStatus = m => { const s = $('#im_status'); if (s) s.textContent = m; else if (m) toast(m); };
-async function runAi(input, from, extra = {}){
-  imStatus('Reading the recipe… this can take up to a minute.');
+// what to do when a link can't be read: copy the recipe off the page yourself
+const linkHelp = () => touch()
+  ? 'Open the recipe in Safari or Chrome, press and hold on the ingredients, drag to select down to the end of the method, tap Copy, then paste it into the Text box below.'
+  : 'Open the recipe in your browser and use the Save to Recipes browser button (under the link box), or select the ingredients and method, copy them and paste them into the Text box below.';
+const linkFail = (host, why) => `Couldn't read ${host || 'that page'}: ${why}. Instead: ${linkHelp()}`;
+async function runAi(input, from, extra = {}, onFail = null){
+  imStatus(input.url && !input.text ? `Asking the AI to open ${hostOf(input.url) || 'the page'}… this can take up to a minute.` : 'Reading the recipe… this can take up to a minute.');
   document.querySelectorAll('.panel [data-a^=im]').forEach(b => b.disabled = true);
   try {
     const j = await extractRecipe(input);
-    if (j.found === false){ imStatus("No recipe found there. Try a clearer photo, or paste the text."); return; }
+    if (j.found === false){ imStatus(onFail ? onFail() : input.images?.length ? 'No recipe found in that photo. Try a clearer photo, or paste the text.' : 'No recipe found in that text.'); return; }
     openRecipeForm(null, { ...fromAi(j, input.url || ''), from, ...extra });
-  } catch (e){ console.error(e); imStatus(e.message || 'Something went wrong.'); }
+  } catch (e){
+    console.error(e);
+    // the AI couldn't open the page either: give the page's own reason; other AI problems (key, limits) say what they are
+    imStatus(onFail && /^Couldn't open that page/.test(e.message || '') ? onFail() : e.message || 'Something went wrong.');
+  }
   finally { document.querySelectorAll('.panel [data-a^=im]').forEach(b => b.disabled = false); }
 }
 async function copyForChatbot(kind, opts, hint){
@@ -1270,21 +1279,27 @@ async function readLink(url){
   const host = hostOf(url);
   imStatus('Opening the page…');
   document.querySelectorAll('.panel [data-a^=im]').forEach(b => b.disabled = true);
-  let page = null;
+  let page = null, callErr = '';
   try { page = (await fetchRecipeFn({ url })).data; }
-  catch (e){ console.error(e); if (e.code === 'functions/invalid-argument'){ imStatus(e.message); return; } }
+  catch (e){ console.error(e); if (e.code === 'functions/invalid-argument'){ imStatus(e.message); return; } callErr = e.message || 'no connection'; }
   finally { document.querySelectorAll('.panel [data-a^=im]').forEach(b => b.disabled = false); }
   let recipe = null;
   try { recipe = page?.ldJson ? findRecipe(JSON.parse(page.ldJson)) : null; } catch (e){ console.error(e); }
   if (recipe){ openRecipeForm(null, { ...fromJsonLd(recipe, page.url || url), from: host || 'the web page' }); return; }
   const text = page?.text?.trim() ? (page.title ? page.title + '\n\n' : '') + page.text : '';
+  // why the page wouldn't open, in plain words
+  const why = page?.error === 'blocked' ? `the site blocks apps from reading its pages${page.code ? ` (error ${page.code})` : ''}`
+    : page?.code === 'timed out' ? 'the page took too long to open'
+    : page?.error ? `the page wouldn't open${page.code ? ` (${page.code})` : ''}`
+    : callErr ? `the app couldn't reach its link reader (${callErr})` : 'the page came back empty';
   if (text && aiReady()){ imStatus('No recipe data on that page, so the AI is reading it…'); return runAi({ text, url }, host || 'the page text'); }
-  if (!text && canReadLinks()) return runAi({ url }, host);   // the page wouldn't open from our server: let the AI try
+  // the page wouldn't open from our server: let the AI try, and say why if it can't either
+  if (!text && canReadLinks()) return runAi({ url }, host, {}, () => linkFail(host, why));
   // no AI to fall back on: leave it ready for the Copy prompt buttons (the copy needs a fresh tap on iPhone)
   const box = $('#im_text');
   if (text && box) box.value = text;
   imStatus(text ? "That page didn't include recipe data, so its text is in the box below. Tap Copy prompt for a chatbot under it, or tidy the text up yourself."
-    : "Couldn't open that page. Tap Copy prompt for a chatbot under the link, or copy the recipe text from the page and paste it below.");
+    : linkFail(host, why));
 }
 async function loadImportFile(file){
   $('#impStatus').textContent = 'Reading…';
