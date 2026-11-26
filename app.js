@@ -1161,7 +1161,7 @@ function openImport(){
     <h3>From a web page</h3>
     ${touch() ? '<p class="note"><b>On iPhone:</b> in Safari tap Share, then Copy (or Save to Recipes, if you\'ve set up the Shortcut below). Come back here and tap Paste.</p>' : ''}
     <label>Recipe link<input id="im_url" type="url" inputmode="url" placeholder="https://…" autocomplete="off"></label>
-    <div class="btns" style="margin-top:6px">${touch() ? '<button class="btn tag" data-a="imPasteLink">Paste</button>' : ''}<button class="btn ${touch() ? '' : 'tag'}" data-a="imUrl">Read the page</button><button class="btn" data-a="imUrlPrompt">Copy prompt for a chatbot</button></div>
+    <div class="btns" style="margin-top:6px"><button class="btn ${touch() ? 'tag' : ''}" data-a="imPasteLink">Paste</button><button class="btn ${touch() ? '' : 'tag'}" data-a="imUrl">Read the page</button><button class="btn" data-a="imUrlPrompt">Copy prompt for a chatbot</button></div>
     <p class="note">Most recipe sites are read for free.${ready ? ' If a page has no recipe data, the AI reads it instead.' : ''}</p>
     <details class="sub-d"><summary>Browser button: one tap on any recipe page (free)</summary>
       <p class="note">Most recipe sites include the recipe in a standard form. This button reads it straight off the page, with no AI needed. For other pages it brings the page text across.</p>
@@ -1547,7 +1547,7 @@ const A = {
     copyForChatbot('url', { url }, 'Prompt copied. Paste it into a chatbot that can open web pages (ChatGPT, Claude, Gemini), then paste its reply below.'); },
   imPasteLink: async () => {
     let clip = '';
-    try { clip = await navigator.clipboard.readText(); } catch (e){ imStatus("Couldn't read the clipboard. Press and hold in the link box and choose Paste."); return; }
+    try { clip = await navigator.clipboard.readText(); } catch (e){ imStatus("Couldn't read the clipboard. Paste into the link box yourself (press and hold, or Ctrl+V), or into the Text box if you used the Save to Recipes Shortcut."); return; }
     const data = parseImport(clip);   // copied by the Save to Recipes Shortcut
     if (data){ useImport(data); return; }
     const url = (clip.match(/https?:\/\/\S+/) || [])[0];
