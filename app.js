@@ -1176,9 +1176,9 @@ function openImport(){
       <ol class="note">
         <li><button class="link" data-a="imCopyShortcut">Copy the Shortcut code</button>.</li>
         <li>Open the <b>Shortcuts</b> app, tap <b>+</b>, and name the new shortcut <b>Save to Recipes</b>.</li>
-        <li>Add the action <b>Run JavaScript on Web Page</b>. Select all the code in it and paste over it.</li>
+        <li>First tap the ⓘ (or the shortcut's name, then <b>Details</b>), turn on <b>Show in Share Sheet</b>, and set it to receive <b>Safari web pages</b>. Tap Done.</li>
+        <li>Add the action <b>Run JavaScript on Web Page</b>. It must read “Run JavaScript on <b>Shortcut Input</b>”. If it shows a faded “Web Page” instead, tap it and choose <b>Shortcut Input</b>. Then select all the code in it and paste over it.</li>
         <li>Add the action <b>Copy to Clipboard</b> underneath.</li>
-        <li>Tap the ⓘ (or the shortcut's name, then <b>Details</b>), turn on <b>Show in Share Sheet</b>, and set it to receive <b>Safari web pages</b>. Tap Done.</li>
         <li>In the iPhone's <b>Settings</b>, go to <b>Apps</b> (or Shortcuts), then <b>Shortcuts</b>, then <b>Advanced</b>, and turn on <b>Allow Running Scripts</b>.</li>
       </ol>
       <p class="note"><b>To use it:</b> on a recipe in Safari, tap Share, then <b>Save to Recipes</b> (tap Allow the first time on each site). Then open this app, tap Add recipes and tap <b>Paste</b>.</p>
