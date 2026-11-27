@@ -1153,6 +1153,8 @@ function bookmarklet(){
 }
 // the iPhone Shortcut's "Run JavaScript on Web Page" code: Shortcuts waits for completion(), then copies what it's given
 const shortcutCode = () => pageGrabber('completion(JSON.stringify(d));');
+// the ready-made Shortcut, shared from iCloud. It holds a copy of shortcutCode(): if pageGrabber changes, rebuild and reshare it
+const SHORTCUT_LINK = 'https://www.icloud.com/shortcuts/78c87a58e5e543eea8d82be703224b4f';
 function openImport(){
   S.liveSheet = null; S.view = ''; S.importList = null; S.imPhotos = null; S.imPages = [];
   const ai = getAi(), ready = aiReady(ai);
@@ -1173,6 +1175,9 @@ function openImport(){
     </details>
     <details class="sub-d"><summary>iPhone: Save to Recipes from Safari's Share menu (free)</summary>
       <p class="note">For sites that won't let the app read their links, such as allrecipes. The Shortcut reads the recipe from the page you have open in Safari, so nothing gets blocked. It takes about two minutes to set up, once.</p>
+      <p><a class="btn tag" href="${SHORTCUT_LINK}" target="_blank" rel="noopener">Get the Shortcut</a></p>
+      <p class="note">Tap <b>Add Shortcut</b>, then in the iPhone's <b>Settings</b> go to <b>Apps</b> (or Shortcuts), then <b>Shortcuts</b>, then <b>Advanced</b>, and turn on <b>Allow Running Scripts</b>. That's it.</p>
+      <p class="note">Or build it yourself:</p>
       <ol class="note">
         <li><button class="link" data-a="imCopyShortcut">Copy the Shortcut code</button>.</li>
         <li>Open the <b>Shortcuts</b> app, tap <b>+</b>, and name the new shortcut <b>Save to Recipes</b>.</li>
