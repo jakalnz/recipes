@@ -1154,7 +1154,7 @@ function bookmarklet(){
 // the iPhone Shortcut's "Run JavaScript on Web Page" code: Shortcuts waits for completion(), then copies what it's given
 const shortcutCode = () => pageGrabber('completion(JSON.stringify(d));');
 // the ready-made Shortcut, shared from iCloud. It holds a copy of shortcutCode(): if pageGrabber changes, rebuild and reshare it
-const SHORTCUT_LINK = 'https://www.icloud.com/shortcuts/78c87a58e5e543eea8d82be703224b4f';
+const SHORTCUT_LINK = 'https://www.icloud.com/shortcuts/cc69af66c2d344d9ac238c70a0427c3a';
 function openImport(){
   S.liveSheet = null; S.view = ''; S.importList = null; S.imPhotos = null; S.imPages = [];
   const ai = getAi(), ready = aiReady(ai);
